@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  malas-kkn-bot:
+    build: .
+    container_name: malas_kkn_bot
+    env_file:
+      - .env
+    restart: unless-stopped
