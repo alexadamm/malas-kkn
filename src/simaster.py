@@ -6,7 +6,8 @@ KKN (Kuliah Kerja Nyata) attendance
 
 import hashlib
 import re
-from datetime import datetime
+import json
+from typing import Dict, List, Optional
 
 import cachelib
 import requests
@@ -38,10 +39,9 @@ def get_simaster_session(
         if ses:
             print("Found cached session. Validating...")
             # validate session by checking if we can access the homepage
-            # and find a csrf token, which indicates were logged in
             try:
                 req = ses.get(HOME_URL, timeout=10)
-                if req.status_code == 200 and "simasterUGM_token" in req.text:
+                if req.status_code == 200:
                     print("Cached session is valid.")
                     return ses
                 else:
@@ -55,7 +55,6 @@ def get_simaster_session(
     login_data = {"aId": "", "username": username, "password": password}
     try:
         req = ses.post(LOGIN_URL, data=login_data)
-        # print(f"--- Raw Server Response ---\n{req.text}\n--------------------------")
         req.raise_for_status()
 
         response_json = req.json()
@@ -108,10 +107,8 @@ def post_kkn_presensi(
         response = ses.post(presensi_url, data=presensi_data)
         response.raise_for_status()
 
-        # print(f"--- Raw Server Response ---\n{response.text}\n--------------------------")
-
         try:
-            # a successful post returns a json object. (so far i think so)
+            # a successful post returns a json object.
             response_json = response.json()
             if response_json.get("status") == "success":
                 print(f"Success message from server: {response_json.get('msg')}")
@@ -120,7 +117,7 @@ def post_kkn_presensi(
                 print(f"Post failed. Server response: {response_json}")
                 return False
         except requests.exceptions.JSONDecodeError:
-            # a failed post (e.g., already attended) returns an html page. (so far i think so)
+            # a failed post (e.g., already attended) returns an html page.
             # parsing the HTML to extract the error message
             print("Post failed. Did not receive a valid JSON response from the server.")
             tree = fromstring(response.text)
@@ -133,3 +130,96 @@ def post_kkn_presensi(
     except requests.exceptions.RequestException as e:
         print(f"An error occurred while posting attendance: {e}")
         return False
+
+
+def get_kkn_programs(ses: requests.Session) -> Optional[List[Dict]]:
+    """
+    Fetches the list of KKN programs by navigating through the KKN pages
+    and using a CSRF token from the session cookie.
+    """
+    try:
+        
+        print("\nAccessing KKN main page to find logbook URL...")
+        kkn_main_url = f"{BASE_URL}/kkn/kkn/"
+        main_page_req = ses.get(kkn_main_url)
+        main_page_req.raise_for_status()
+
+        logbook_page_url_match = re.search(
+            r"<a href=['\"]([^'\"]*logbook_program[^'\"]*)['\"][^>]*>.*?Pelaksanaan Program.*?</a>",
+            main_page_req.text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not logbook_page_url_match:
+            print("Could not find 'Pelaksanaan Program' link on the KKN main page.")
+            return None
+        logbook_page_url = logbook_page_url_match.group(1)
+        if not logbook_page_url.startswith("http"):
+            logbook_page_url = f"{BASE_URL}{logbook_page_url.lstrip('/')}"
+        print(f"Found logbook page URL: {logbook_page_url}")
+
+        print(f"Accessing logbook page to set session cookie and get data URL...")
+        page_req = ses.get(logbook_page_url)
+        page_req.raise_for_status()
+
+        # get CSRF token from the session's cookie.
+        token = ses.cookies.get('simasterUGM_cookie')
+        if not token:
+            print("Could not find 'simasterUGM_cookie' in the session after visiting the logbook page.")
+            return None
+        print(f"Found CSRF token in session cookie: {token}")
+
+        # parse data URL.
+        data_url_match = re.search(
+            r"'url'\s*:\s*[\"'](https://simaster\.ugm\.ac\.id/kkn/kkn/logbook_program_data/[^\"']+)",
+            page_req.text,
+        )
+        if not data_url_match:
+            print("Could not find data URL in logbook page's JavaScript.")
+            return None
+        data_url = data_url_match.group(1)
+        print(f"Found data URL: {data_url}")
+
+        #POST request to get proker's table.
+        post_data = {
+            "draw": "1", "start": "0", "length": "25",
+            "search[value]": "", "search[regex]": "false", "dt": "{}",
+            "simasterUGM_token": token,
+            "columns[0][data]": "no", "columns[0][name]": "", "columns[0][searchable]": "false", "columns[0][orderable]": "false", "columns[0][search][value]": "", "columns[0][search][regex]": "false",
+            "columns[1][data]": "program_nama", "columns[1][name]": "", "columns[1][searchable]": "true", "columns[1][orderable]": "true", "columns[1][search][value]": "", "columns[1][search][regex]": "false",
+            "columns[2][data]": "program_mhs_judul", "columns[2][name]": "", "columns[2][searchable]": "true", "columns[2][orderable]": "true", "columns[2][search][value]": "", "columns[2][search][regex]": "false",
+            "columns[3][data]": "program_jenis_id", "columns[3][name]": "", "columns[3][searchable]": "true", "columns[3][orderable]": "true", "columns[3][search][value]": "", "columns[3][search][regex]": "false",
+            "columns[4][data]": "program_mhs_keberlanjutan", "columns[4][name]": "", "columns[4][searchable]": "true", "columns[4][orderable]": "true", "columns[4][search][value]": "", "columns[4][search][regex]": "false",
+            "columns[5][data]": "status_nama", "columns[5][name]": "", "columns[5][searchable]": "true", "columns[5][orderable]": "true", "columns[5][search][value]": "", "columns[5][search][regex]": "false",
+            "columns[6][data]": "action", "columns[6][name]": "", "columns[6][searchable]": "false", "columns[6][orderable]": "false", "columns[6][search][value]": "", "columns[6][search][regex]": "false",
+        }
+        headers = {"X-Requested-With": "XMLHttpRequest"}
+
+        print("Fetching program data with full DataTables payload...")
+        data_req = ses.post(data_url, data=post_data, headers=headers)
+        data_req.raise_for_status()
+
+        programs_data = data_req.json()
+        
+        
+        new_token = programs_data.get('csrf_value')
+        if new_token:
+            ses.cookies.set('simasterUGM_cookie', new_token)
+            print(f"Updated session with new CSRF token: {new_token}")
+
+        programs = programs_data.get("data", [])
+        print(f"Found {len(programs)} programs.")
+        return programs
+
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred while fetching programs: {e}")
+        return None
+    except json.JSONDecodeError:
+        print("Failed to decode JSON from the server response.")
+        print("Response Text:", data_req.text)
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred in get_kkn_programs: {e}")
+        return None
+
+
+

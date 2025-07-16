@@ -5,6 +5,9 @@ import time
 from .simaster import get_simaster_session, post_kkn_presensi
 from .utils import generate_random_point, get_next_run_time
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def main():
     print("--- KKN Attendance Server Starting ---")
