@@ -343,34 +343,55 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
         rows = tree.xpath('//table[@id="datatables2"]/tbody/tr')
         
         entries = []
-        # Each entry consists of two 'tr' elements, so we process them in pairs.
-        for i in range(0, len(rows), 2):
+        i = 0
+        while i < len(rows):
             main_row = rows[i]
-            sub_row = rows[i+1] # The row with the attendance status
-            #need to find "presensi" button in the sub row
             cols = main_row.findall('td')
-            if len(cols) < 5:
+
+            # If it's not a main entry row, skip 
+            if len(cols) != 5:
+                i += 1
                 continue
-
+            
+            # If it IS a main entry row, parse
             action_html_str = tostring(cols[4], pretty_print=True).decode('utf-8')
-            
-        
             kegiatan_match = re.search(r"href=['\"]([^'\"]*logbook_kegiatan[^'\"]*)['\"]", action_html_str)
-            kegiatan_url = kegiatan_match.group(1) if kegiatan_match else None
-            
-            attendance_status = "Belum Presensi"
-            if "Sudah Presensi" in sub_row.text_content():
-                attendance_status = "Sudah Presensi"
 
-            entries.append({
-                "entry_index": i // 2 + 1,
-                "kegiatan_url": kegiatan_url, # URL to the sub-entry list page
+            entry_data = {
+                "entry_index": int(cols[0].text_content().strip()),
+                "kegiatan_url": kegiatan_match.group(1) if kegiatan_match else None,
                 "title": cols[1].text_content().strip(),
                 "date": cols[2].text_content().strip(),
                 "location": cols[3].text_content().strip(),
-                "attendance_status": attendance_status,
-            })
+                # Default status. If any sub-entry is not attended, this will be the final status.
+                "attendance_status": "Sudah Presensi", 
+            }
 
+            # Now, look ahead for all consecutive sub-entry rows
+            sub_entry_found = False
+            j = i + 1
+            while j < len(rows):
+                sub_row = rows[j]
+                sub_cols = sub_row.findall('td')
+                # A sub-row has 2 columns, the first of which is empty
+                if len(sub_cols) == 2 and not sub_cols[0].text_content():
+                    sub_entry_found = True
+                    # If we find even one sub-entry that is not attended, the whole entry is marked as such.
+                    if "Belum Presensi" in sub_row.text_content():
+                        entry_data["attendance_status"] = "Belum Presensi"
+                    j += 1 # Move to the next potential sub-row
+                else:
+                    # This row is not a sub-entry, so we stop looking
+                    break
+            
+            # If no sub-entries were found at all, mark status as unknown or pending
+            if not sub_entry_found:
+                entry_data["attendance_status"] = "Belum Presensi"
+
+            entries.append(entry_data)
+            
+            # Move the main index 'i' past all the rows we just processed
+            i = j
         print(f"Found and parsed {len(entries)} entries from the HTML.")
         return entries
 
