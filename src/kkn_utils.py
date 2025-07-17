@@ -139,30 +139,29 @@ def run_post_attendance(program_mhs_id: str, entry_index: int, sub_entry_title: 
         print("Login failed. Exiting.")
         return
 
-    print(f"\nFetching entries for program {program_mhs_id} to find main entry number {entry_index}...")
-    entries = get_logbook_entries_by_id(session, program_mhs_id)
-    if not entries:
-        print("Could not fetch entries. Cannot post attendance.")
+    # Add this block to get coordinates
+    try:
+        latitude = float(os.getenv("KKN_LOCATION_LATITUDE"))
+        longitude = float(os.getenv("KKN_LOCATION_LONGITUDE"))
+    except (TypeError, ValueError):
+        print("Error: KKN_LOCATION_LATITUDE and KKN_LOCATION_LONGITUDE environment variables not set or invalid.")
         return
 
-    target_main_entry = None
-    for entry in entries:
-        if entry.get("entry_index") == entry_index:
-            target_main_entry = entry
-            break
-    
-    if not target_main_entry:
-        print(f"Could not find main entry number {entry_index}.")
-        return
+    # Generate a random point to avoid submitting the exact same coordinates every time
+    random_lat, random_lon = generate_random_point(latitude, longitude, 50)
+    print(f"Generated random point for attendance: (Lat: {random_lat}, Lon: {random_lon})")
 
-    success = post_attendance_for_sub_entry(session, target_main_entry, sub_entry_title)
+    from src.simaster import post_attendance_for_sub_entry
+
+    # Update the function call to pass the new coordinates
+    success = post_attendance_for_sub_entry(
+        session, program_mhs_id, entry_index, sub_entry_title, random_lat, random_lon
+    )
 
     if success:
         print("\nAttendance posted successfully for sub-entry.")
     else:
         print("\nFailed to post attendance for sub-entry.")
-
-
 if __name__ == "__main__":
     import argparse
 

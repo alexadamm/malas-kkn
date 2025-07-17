@@ -306,7 +306,7 @@ def add_kkn_logbook_entry_by_id(
         return False
 
     return add_kkn_logbook_entry(ses, target_program, entry_title, entry_date, latitude, longitude)
-"""BUG: Sometimes its not parsing every single entry, but you can just go to the website and take a look at it anyway"""
+
 def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Optional[List[Dict]]:
     """
     Fetches the logbook entries (RPP) for a specific KKN program.
@@ -363,11 +363,10 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
                 "title": cols[1].text_content().strip(),
                 "date": cols[2].text_content().strip(),
                 "location": cols[3].text_content().strip(),
-                # Default status. If any sub-entry is not attended, this will be the final status.
                 "attendance_status": "Sudah Presensi", 
             }
 
-            # Now, look ahead for all consecutive sub-entry rows
+            # look ahead for all consecutive sub-entry rows
             sub_entry_found = False
             j = i + 1
             while j < len(rows):
@@ -381,7 +380,6 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
                         entry_data["attendance_status"] = "Belum Presensi"
                     j += 1 # Move to the next potential sub-row
                 else:
-                    # This row is not a sub-entry, so we stop looking
                     break
             
             # If no sub-entries were found at all, mark status as unknown or pending
@@ -483,76 +481,112 @@ def create_sub_entry(ses: requests.Session, main_entry: Dict, sub_entry_title: s
         return False
 
 """
-THIS DOESNT EVEN WORK BRO WHAT THE FUCK, regex error, need to find "Presensi" button under the programs, get the url and then do a POST req.
+it works now
 """
-def post_attendance_for_sub_entry(ses: requests.Session, main_entry: Dict, sub_entry_title_to_find: str) -> bool:
+
+def post_attendance_for_sub_entry(ses: requests.Session, program_mhs_id: str, main_entry_index: int, sub_entry_title_to_find: str, latitude: float, longitude: float) -> bool:
     """
-    Finds a sub-entry by its title and posts attendance for it.
+    Finds a specific sub-entry and posts attendance using a specific token
+    captured from the RPP page response.
     """
     try:
-        kegiatan_url = main_entry.get("kegiatan_url")
-        if not kegiatan_url:
-            print("Selected main entry is missing the 'kegiatan_url'. Cannot proceed.")
+        
+        programs = get_kkn_programs(ses)
+        if not programs: return False
+        target_program = next((p for p in programs if p.get("program_mhs_id") == program_mhs_id), None)
+        if not target_program:
+            print(f"Program with ID '{program_mhs_id}' not found.")
             return False
+        action_html = target_program.get("action", "")
+        rpp_url_match = re.search(r"href='([^']+logbook_program_rpp[^']+)'", action_html)
+        if not rpp_url_match: return False
+        rpp_url = rpp_url_match.group(1)
+        
+        print(f"\nAccessing RPP page for program {program_mhs_id}...")
+        rpp_page_req = ses.get(rpp_url)
+        rpp_page_req.raise_for_status()
+
+        page_token = rpp_page_req.cookies.get('simasterUGM_cookie')
+        if not page_token:
+            print("ERROR: Could not find 'simasterUGM_cookie' in the RPP page response. Trying session cookie as fallback.")
+            page_token = ses.cookies.get('simasterUGM_cookie')
+            if not page_token:
+                 print("Fallback failed. Cannot find a valid token.")
+                 return False
+        print(f"Successfully captured page token: {page_token}")
+
+        tree = fromstring(rpp_page_req.content)
+        rows = tree.xpath('//table[@id="datatables2"]/tbody/tr')
+
+        i = 0
+        while i < len(rows):
+            main_row = rows[i]
+            cols = main_row.findall('td')
+
+            if len(cols) != 5:
+                i += 1
+                continue
             
-        print(f"\nAccessing 'Kegiatan' page to find sub-entry '{sub_entry_title_to_find}'...")
-        kegiatan_page_req = ses.get(kegiatan_url)
-        kegiatan_page_req.raise_for_status()
-        
-        tree = fromstring(kegiatan_page_req.content)
+            if int(cols[0].text_content().strip()) != main_entry_index:
+                i += 1
+                continue
+            
+            print(f"Found main entry #{main_entry_index}. Searching for sub-entry '{sub_entry_title_to_find}'...")
+            j = i + 1
+            while j < len(rows):
+                sub_row = rows[j]
+                if len(sub_row.findall('td')) != 2: break
 
-        # Scrape all hidden inputs from the page, which are needed for the payload
-        hidden_inputs = tree.xpath('//form[contains(@action, "logbook_kegiatan_presensi")]//input[@type="hidden"]')
-        payload = {inp.get("name"): inp.get("value") for inp in hidden_inputs}
-        
-        if not payload.get("simasterUGM_token"):
-            print("Could not find the main attendance form or token on the page.")
+                if sub_entry_title_to_find in sub_row.text_content():
+                    print("Found target sub-entry row.")
+                    
+                    presensi_buttons = sub_row.xpath(".//a[contains(., 'Presensi')]")
+                    if not presensi_buttons:
+                        print("No 'Presensi' button available.")
+                        return False
+                    presensi_button = presensi_buttons[0]
+
+                    ajaxify_url = presensi_button.get('ajaxify')
+                    if not ajaxify_url:
+                        print("ERROR: 'Presensi' button has no 'ajaxify' URL.")
+                        return False
+                    
+                    url_parts = [part for part in ajaxify_url.split('/') if part]
+                    
+                    
+                    payload = {
+                        "timelineId": url_parts[-5],
+                        "rppJenisProgram": url_parts[-4],
+                        "rppMhsId": url_parts[-3],
+                        "kegiatanMhsId": url_parts[-2],
+                        "programMhsId": url_parts[-1],
+                        "agreement": "1",
+                        "latitude": str(latitude),
+                        "longtitude": str(longitude),
+                        "simasterUGM_token": page_token
+                    }
+                    
+                    action_url = f"{BASE_URL}/kkn/kkn/logbook_kegiatan_presensi"
+                    print("Submitting attendance request...")
+                    response = ses.post(action_url, data=payload)
+                    response.raise_for_status()
+                    
+                    response_json = response.json()
+                    if response_json.get("status") == "success":
+                        print(f"SUCCESS: {response_json.get('msg')}")
+                        return True
+                    else:
+                        print(f"FAILED: Server response: {response_json.get('msg')}")
+                        return False
+                j += 1
+            
+            print(f"Error: Could not find sub-entry '{sub_entry_title_to_find}'.")
             return False
         
-        print(f"Found main attendance form token: {payload.get('simasterUGM_token')}")
-
-        # Find the specific sub-entry row and its unique ID
-        target_kegiatan_id = None
-        rows = tree.xpath('//table/tbody/tr')
-        for row in rows:
-            # Find the cell that contains the title
-            title_element = row.xpath(f'.//td[contains(text(), "{sub_entry_title_to_find}")]')
-            if title_element:
-                # In the same row, find the attendance button and extract the sub-entry ID from its name
-                presensi_button = row.find('.//button[@name="kegiatanMhsId"]')
-                if presensi_button is not None:
-                    target_kegiatan_id = presensi_button.get("value")
-                    break
-        
-        if not target_kegiatan_id:
-            print(f"Could not find sub-entry with title '{sub_entry_title_to_find}' or it has no attendance button.")
-            return False
-
-        print(f"Found sub-entry ID (kegiatanMhsId) to attend: {target_kegiatan_id}")
-
-        # Add the specific sub-entry ID to the payload
-        payload["kegiatanMhsId"] = target_kegiatan_id
-        payload["agreement"] = "1"
-        payload["latitude"] = ""
-        payload["longtitude"] = ""
-
-        action_url = f"{BASE_URL}/kkn/kkn/logbook_kegiatan_presensi"
-        
-        print(f"Submitting attendance for sub-entry ID {target_kegiatan_id}...")
-        response = ses.post(action_url, data=payload)
-        response.raise_for_status()
-
-        response_json = response.json()
-        if response_json.get("status") == "success":
-            print(f"Success: {response_json.get('msg')}")
-            return True
-        else:
-            print(f"Failed to post attendance. Server response: {response_json}")
-            return False
-
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while posting attendance: {e}")
+        print(f"Error: Could not find main entry #{main_entry_index}.")
         return False
+
     except Exception as e:
         print(f"An unexpected error occurred in post_attendance_for_sub_entry: {e}")
         return False
+
