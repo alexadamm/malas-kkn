@@ -8,7 +8,9 @@ from src.simaster import (
     get_kkn_programs, 
     get_logbook_entries_by_id,
     get_sub_entries_for_main_entry,
+    get_bantu_pic_entries,
     create_sub_entry,
+    create_bantu_pic_sub_entry,
     add_kkn_logbook_entry_by_id,
     post_attendance_for_sub_entry
 )
@@ -92,6 +94,24 @@ def select_sub_entry(session, main_entry):
         except ValueError:
             print("Invalid input. Please enter a number.")
 
+def select_pic_entry(session, pic_entries):
+    """Lists PIC-assisted programs and prompts the user to select one."""
+    print("\nAvailable PIC-Assisted Programs:")
+    for entry in pic_entries:
+        print(f"  [{entry.get('index')}] {entry.get('title')} (PIC: {entry.get('pic')})")
+
+    while True:
+        try:
+            choice = int(input(f"Please select a program to assist (1-{len(pic_entries)}): "))
+            selected_entry = next((e for e in pic_entries if e.get("index") == choice), None)
+            if selected_entry:
+                return selected_entry
+            else:
+                print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+
 # --- Logic Handlers for Menu Actions ---
 
 def handle_add_logbook_entry(session):
@@ -157,23 +177,11 @@ def handle_add_logbook_entry(session):
     else:
         print("\nFailed to add logbook entry.")
 
-def handle_create_sub_entry(session):
-    """Guides user to create a new sub-entry, with optional AI generation."""
-    program = select_program(session)
-    if not program:
-        return
-    
-    program_mhs_id = program.get("program_mhs_id")
-    proker_title = program.get("program_mhs_judul", "Judul Proker Tidak Ditemukan")
-
-    main_entry = select_main_entry(session, program_mhs_id)
-    if not main_entry:
-        return
-
+def get_sub_entry_details_from_user(proker_title):
+    """Shared logic to get sub-entry details from the user, with AI option."""
     sub_entry_title = input("\nEnter the title for the new sub-entry (kegiatan): ")
     duration_str = input("Enter the duration in minutes (default: 60): ") or "60"
-    duration = int(duration_str)
-
+    
     # --- Get additional details ---
     pelaksanaan_datetime_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     sasaran = "-"
@@ -232,13 +240,34 @@ def handle_create_sub_entry(session):
     else:
         description_text = input("\nEnter Deskripsi Kegiatan: ")
         hasil_kegiatan_text = input("Enter Hasil Kegiatan (default: 'Kegiatan terlaksana dengan baik.'): ") or "Kegiatan terlaksana dengan baik."
+    
+    return {
+        "sub_entry_title": sub_entry_title,
+        "duration": int(duration_str),
+        "pelaksanaan_datetime": pelaksanaan_datetime_str,
+        "sasaran": sasaran,
+        "jumPeserta": jumPeserta,
+        "jumDana": jumDana,
+        "description_text": description_text,
+        "hasil_kegiatan_text": hasil_kegiatan_text,
+    }
 
-    success = create_sub_entry(
-        session, main_entry, sub_entry_title, 
-        description_text, hasil_kegiatan_text, duration,
-        pelaksanaan_datetime_str, sasaran, jumPeserta, jumDana
-    )
+def handle_create_sub_entry(session):
+    """Guides user to create a new sub-entry for their own program."""
+    program = select_program(session)
+    if not program:
+        return
+    
+    program_mhs_id = program.get("program_mhs_id")
+    proker_title = program.get("program_mhs_judul", "Judul Proker Tidak Ditemukan")
 
+    main_entry = select_main_entry(session, program_mhs_id)
+    if not main_entry:
+        return
+
+    form_details = get_sub_entry_details_from_user(proker_title)
+    
+    success = create_sub_entry(session, main_entry, form_details)
     if success:
         print("\nSub-entry created successfully.")
     else:
@@ -280,6 +309,42 @@ def handle_post_attendance(session):
     else:
         print("\nFailed to post attendance.")
 
+def handle_bantu_pic(session):
+    """Guides user to create a sub-entry for a PIC-assisted program."""
+    print("\nTo find PIC-assisted programs, we first need to navigate via one of your own programs.")
+    my_program = select_program(session)
+    if not my_program:
+        return
+
+    pic_entries = get_bantu_pic_entries(session, my_program)
+    if not pic_entries:
+        print("No PIC-assisted programs could be found from that entry point.")
+        return
+
+    selected_pic_entry = select_pic_entry(session, pic_entries)
+    if not selected_pic_entry:
+        return
+    
+    # Display existing sub-activities for context
+    print(f"\n--- Existing Activities for {selected_pic_entry.get('pic')} ---")
+    if selected_pic_entry.get('sub_activities'):
+        for activity in selected_pic_entry.get('sub_activities'):
+            print(f"  - {activity.get('full_text')} {activity.get('duration')}")
+    else:
+        print("  No sub-activities found for this entry yet.")
+    print("----------------------------------------------------")
+
+    proker_title = selected_pic_entry.get("title", "Judul Proker Tidak Ditemukan")
+    
+    form_details = get_sub_entry_details_from_user(proker_title)
+
+    success = create_bantu_pic_sub_entry(session, selected_pic_entry, form_details)
+    if success:
+        print("\nAssisted sub-entry created successfully.")
+    else:
+        print("\nFailed to create assisted sub-entry.")
+
+
 def main():
     """Main function to run the interactive CLI."""
     username = os.getenv("SIMASTER_USERNAME")
@@ -297,12 +362,13 @@ def main():
     while True:
         print("\n--- Malas KKN CLI ---")
         print("What would you like to do?")
-        print("[1] Add New Logbook Entry (Main Entry)")
-        print("[2] Add New Sub-Entry (Kegiatan)")
-        print("[3] Post Attendance for a Sub-Entry")
-        print("[4] Exit")
+        print("[1] Add New Logbook Entry (My Program)")
+        print("[2] Add New Sub-Entry (My Program)")
+        print("[3] Post Attendance for My Sub-Entry")
+        print("[4] Program Bantu")
+        print("[5] Exit")
         
-        choice = input("Enter your choice (1-4): ")
+        choice = input("Enter your choice (1-5): ")
 
         if choice == '1':
             handle_add_logbook_entry(session)
@@ -311,6 +377,8 @@ def main():
         elif choice == '3':
             handle_post_attendance(session)
         elif choice == '4':
+            handle_bantu_pic(session)
+        elif choice == '5':
             print("Exiting. Sampai jumpa!")
             break
         else:
