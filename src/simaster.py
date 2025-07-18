@@ -294,7 +294,7 @@ def add_kkn_logbook_entry_by_id(
 
 def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Optional[List[Dict]]:
     """
-    Fetches the logbook entries (RPP) for a specific KKN program.
+    Fetches the logbook entries (RPP) for a specific KKN program, including detailed sub-entries.
     """
     try:
         programs = get_kkn_programs(ses)
@@ -327,40 +327,65 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
             main_row = rows[i]
             cols = main_row.findall('td')
 
-            if len(cols) != 5:
-                i += 1
-                continue
-            
-            action_html_str = tostring(cols[4], pretty_print=True).decode('utf-8')
-            kegiatan_match = re.search(r"href=['\"]([^'\"]*logbook_kegiatan[^'\"]*)['\"]", action_html_str)
+            # This is a main entry row
+            if len(cols) == 5:
+                action_html_str = tostring(cols[4], pretty_print=True).decode('utf-8')
+                kegiatan_match = re.search(r"href=['\"]([^'\"]*logbook_kegiatan[^'\"]*)['\"]", action_html_str)
 
-            entry_data = {
-                "entry_index": int(cols[0].text_content().strip()),
-                "kegiatan_url": kegiatan_match.group(1) if kegiatan_match else None,
-                "title": cols[1].text_content().strip(),
-                "date": cols[2].text_content().strip(),
-                "location": cols[3].text_content().strip(),
-                "attendance_status": "Sudah Presensi", 
-            }
+                entry_data = {
+                    "entry_index": int(cols[0].text_content().strip()),
+                    "kegiatan_url": kegiatan_match.group(1) if kegiatan_match else None,
+                    "title": cols[1].text_content().strip(),
+                    "date": cols[2].text_content().strip(),
+                    "location": cols[3].text_content().strip(),
+                    "sub_entries": []
+                }
 
-            sub_entry_found = False
-            j = i + 1
-            while j < len(rows):
-                sub_row = rows[j]
-                sub_cols = sub_row.findall('td')
-                if len(sub_cols) == 2 and not sub_cols[0].text_content():
-                    sub_entry_found = True
-                    if "Belum Presensi" in sub_row.text_content():
-                        entry_data["attendance_status"] = "Belum Presensi"
-                    j += 1
+                # Look ahead for all consecutive sub-entry rows
+                all_sub_attended = True
+                sub_entry_found = False
+                j = i + 1
+                while j < len(rows):
+                    sub_row = rows[j]
+                    sub_cols = sub_row.findall('td')
+                    # A sub-row has an empty first cell and content in the second
+                    if len(sub_cols) == 2 and not sub_cols[0].text_content():
+                        sub_entry_found = True
+                        
+                        full_text = ' '.join(sub_cols[1].text_content().split())
+                        is_attended = "Sudah Presensi" in full_text
+                        
+                        # Extract title and duration
+                        title_match = re.search(r"^(.*?)\s\(", full_text)
+                        title = title_match.group(1).strip() if title_match else "N/A"
+                        
+                        duration_match = re.search(r"\[(.*?)\]", full_text)
+                        duration = duration_match.group(1).strip() if duration_match else "N/A"
+
+                        entry_data["sub_entries"].append({
+                            "title": title,
+                            "full_text": full_text,
+                            "duration": duration,
+                            "is_attended": is_attended
+                        })
+                        
+                        if not is_attended:
+                            all_sub_attended = False
+                        j += 1
+                    else:
+                        break # Not a sub-row, break the inner loop
+                
+                # Determine overall status
+                if not sub_entry_found:
+                    entry_data["attendance_status"] = "Belum Presensi"
                 else:
-                    break
-            
-            if not sub_entry_found:
-                entry_data["attendance_status"] = "Belum Presensi"
+                    entry_data["attendance_status"] = "Sudah Presensi" if all_sub_attended else "Belum Presensi"
 
-            entries.append(entry_data)
-            i = j
+                entries.append(entry_data)
+                i = j # Move the main index past all the rows we just processed
+            else:
+                i += 1 # Not a main row, just move to the next one
+        
         return entries
 
     except requests.exceptions.RequestException as e:
@@ -370,101 +395,76 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
         print(f"An unexpected error occurred in get_logbook_entries_by_id: {e}")
         return None
 
-def get_sub_entries_for_main_entry(ses: requests.Session, main_entry: Dict) -> Optional[List[Dict]]:
-    """
-    Fetches the sub-entries (kegiatan) for a specific main logbook entry.
-    """
-    try:
-        kegiatan_url = main_entry.get("kegiatan_url")
-        if not kegiatan_url:
-            print("Selected main entry is missing the 'kegiatan_url'. Cannot proceed.")
-            return None
+# def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> Optional[List[Dict]]:
+#     """
+#     Navigates to the RPP page for a given program to find and scrape the 'Program Bantu' table.
+#     """
+#     try:
+#         # 1. Get the RPP page URL from the user's own program entry
+#         action_html = entry_point_program.get("action", "")
+#         rpp_url_match = re.search(r"href='([^']+logbook_program_rpp[^']+)'", action_html)
+#         if not rpp_url_match:
+#             print("Could not find RPP URL in the selected program's action HTML.")
+#             return None
+#         rpp_url = rpp_url_match.group(1)
 
-        kegiatan_page_req = ses.get(kegiatan_url)
-        kegiatan_page_req.raise_for_status()
+#         # 2. Navigate to the RPP page
+#         rpp_page_req = ses.get(rpp_url)
+#         rpp_page_req.raise_for_status()
 
-        tree = fromstring(kegiatan_page_req.content)
-        table = tree.find('.//table')
-        if table is None:
-            return []
+#         tree = fromstring(rpp_page_req.content)
+        
+#         # 3. Find the panel for "Program Bantu"
+#         bantu_panel_heading = tree.xpath('//div[@class="panel-heading"]/span[contains(text(), "Program Bantu (Sebagai Anggota)")]')
+#         if not bantu_panel_heading:
+#             # It's possible the panel doesn't exist if there are no programs to assist
+#             return [] 
+
+#         bantu_panel = bantu_panel_heading[0].getparent().getparent()
+#         rows = bantu_panel.xpath('.//table/tbody/tr')
+
+#         pic_entries = []
+#         current_main_entry = None
+
+#         for row in rows:
+#             cols = row.findall('td')
+#             # This is a main PIC entry row
+#             if len(cols) >= 6:
+#                 action_link_node = cols[2].find('.//a')
+#                 if action_link_node is None:
+#                     continue
+                
+#                 current_main_entry = {
+#                     "index": int(cols[0].text_content().strip()),
+#                     "title": cols[1].text_content().strip(),
+#                     "kegiatan_url": action_link_node.get("href"),
+#                     "pic": cols[3].text_content().strip(),
+#                     "date": cols[4].text_content().strip(),
+#                     "location": cols[5].text_content().strip(),
+#                     "sub_activities": []
+#                 }
+#                 pic_entries.append(current_main_entry)
             
-        rows = table.xpath('.//tbody/tr')
-        sub_entries = []
-        for row in rows:
-            cols = row.findall('td')
-            if len(cols) < 5:
-                continue
-
-            title = cols[1].text_content().strip()
-            status_text = cols[4].text_content().strip()
-            is_attended = "Sudah Presensi" in status_text
-
-            sub_entries.append({
-                "title": title,
-                "is_attended": is_attended
-            })
+#             # This is a sub-activity row
+#             elif len(cols) == 1 and current_main_entry:
+#                 sub_activity_full_text = ' '.join(cols[0].text_content().split())
+                
+#                 duration_span = cols[0].find('.//span[@data-original-title="Durasi"]')
+#                 duration = duration_span.text.strip() if duration_span is not None else "[N/A]"
+                
+#                 current_main_entry["sub_activities"].append({
+#                     "full_text": sub_activity_full_text,
+#                     "duration": duration
+#                 })
         
-        return sub_entries
+#         return pic_entries
 
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while fetching sub-entries: {e}")
-        return None
-    except Exception as e:
-        print(f"An unexpected error occurred in get_sub_entries_for_main_entry: {e}")
-        return None
-
-def get_bantu_pic_entries(ses: requests.Session) -> Optional[List[Dict]]:
-    """
-    Fetches the list of PIC programs that the user can assist with.
-    """
-    try:
-        kkn_main_url = f"{BASE_URL}/kkn/kkn/"
-        main_page_req = ses.get(kkn_main_url)
-        main_page_req.raise_for_status()
-
-        bantu_url_match = re.search(r"<a href=['\"]([^'\"]*logbook_program_bantu[^'\"]*)['\"]", main_page_req.text)
-        if not bantu_url_match:
-            print("Could not find 'Program Bantu' link on the KKN main page.")
-            return None
-        
-        bantu_url = bantu_url_match.group(1)
-        if not bantu_url.startswith("http"):
-            bantu_url = f"{BASE_URL}{bantu_url.lstrip('/')}"
-        
-        bantu_page_req = ses.get(bantu_url)
-        bantu_page_req.raise_for_status()
-
-        tree = fromstring(bantu_page_req.content)
-        rows = tree.xpath('//table/tbody/tr')
-
-        pic_entries = []
-        for row in rows:
-            cols = row.findall('td')
-            if len(cols) < 6:
-                continue
-
-            action_link_node = cols[2].find('.//a')
-            if action_link_node is None:
-                continue
-
-            entry_data = {
-                "index": int(cols[0].text_content().strip()),
-                "title": cols[1].text_content().strip(),
-                "kegiatan_url": action_link_node.get("href"),
-                "pic": cols[3].text_content().strip(),
-                "date": cols[4].text_content().strip(),
-                "location": cols[5].text_content().strip(),
-            }
-            pic_entries.append(entry_data)
-        
-        return pic_entries
-
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while fetching PIC entries: {e}")
-        return None
-    except Exception as e:
-        print(f"An unexpected error occurred in get_bantu_pic_entries: {e}")
-        return None
+#     except requests.exceptions.RequestException as e:
+#         print(f"An error occurred while fetching PIC entries: {e}")
+#         return None
+#     except Exception as e:
+#         print(f"An unexpected error occurred in get_bantu_pic_entries: {e}")
+#         return None
 
 def create_sub_entry_base(
     ses: requests.Session,

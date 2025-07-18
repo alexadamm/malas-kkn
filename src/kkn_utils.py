@@ -7,7 +7,6 @@ from src.simaster import (
     get_simaster_session, 
     get_kkn_programs, 
     get_logbook_entries_by_id,
-    get_sub_entries_for_main_entry,
     get_bantu_pic_entries,
     create_sub_entry,
     create_bantu_pic_sub_entry,
@@ -68,16 +67,15 @@ def select_main_entry(session, program_mhs_id, show_entries=True):
             print("Invalid input. Please enter a number.")
 
 def select_sub_entry(session, main_entry):
-    """Lists sub-entries and prompts the user to select one."""
-    print(f"\nFetching sub-entries for '{main_entry.get('title')}'...")
-    sub_entries = get_sub_entries_for_main_entry(session, main_entry)
-    if not sub_entries:
-        print("No sub-entries found for this main entry.")
-        return None
+    """
+    Uses the pre-fetched sub_entries from the main_entry dictionary to list and select one.
+    """
+    print(f"\nSub-entries for '{main_entry.get('title')}':")
     
-    unattended_entries = [se for se in sub_entries if not se.get('is_attended')]
+    unattended_entries = [se for se in main_entry.get('sub_entries', []) if not se.get('is_attended')]
+    
     if not unattended_entries:
-        print("All sub-entries have already been attended.")
+        print("No sub-entries found or all have been attended.")
         return None
 
     print("\nAvailable Sub-Entries (that need attendance):")
@@ -365,7 +363,7 @@ def main():
         print("[1] Add New Logbook Entry (My Program)")
         print("[2] Add New Sub-Entry (My Program)")
         print("[3] Post Attendance for My Sub-Entry")
-        print("[4] Program Bantu")
+        # print("[4] Help Fill PIC Logbook (Program Bantu)")
         print("[5] Exit")
         
         choice = input("Enter your choice (1-5): ")
@@ -376,8 +374,8 @@ def main():
             handle_create_sub_entry(session)
         elif choice == '3':
             handle_post_attendance(session)
-        elif choice == '4':
-            handle_bantu_pic(session)
+        # elif choice == '4':
+        #     handle_bantu_pic(session)
         elif choice == '5':
             print("Exiting. Sampai jumpa!")
             break
