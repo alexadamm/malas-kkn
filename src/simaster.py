@@ -348,32 +348,33 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
                 while j < len(rows):
                     sub_row = rows[j]
                     sub_cols = sub_row.findall('td')
-                    # A sub-row has an empty first cell and content in the second
-                    if len(sub_cols) == 2 and not sub_cols[0].text_content():
-                        sub_entry_found = True
-                        
+                    if len(sub_cols) == 2 and not sub_cols[0].text_content().strip():
                         full_text = ' '.join(sub_cols[1].text_content().split())
                         is_attended = "Sudah Presensi" in full_text
-                        
-                        # Extract title and duration
-                        title_match = re.search(r"^(.*?)\s\(", full_text)
-                        title = title_match.group(1).strip() if title_match else "N/A"
-                        
-                        duration_match = re.search(r"\[(.*?)\]", full_text)
-                        duration = duration_match.group(1).strip() if duration_match else "N/A"
 
-                        entry_data["sub_entries"].append({
-                            "title": title,
-                            "full_text": full_text,
-                            "duration": duration,
-                            "is_attended": is_attended
-                        })
+                        # More powerful regex to capture title, datetime, and duration
+                        sub_entry_pattern = re.compile(
+                            r'^(?P<title>.*?)\s+'
+                            r'\((?P<datetime_str>.*? \d{2}:\d{2}.*?)\)\s+'
+                            r'\[(?P<duration>.*?)\]'
+                        )
+                        match = sub_entry_pattern.search(full_text)
                         
-                        if not is_attended:
-                            all_sub_attended = False
+                        sub_data = { "is_attended": is_attended }
+                        if match:
+                            sub_data['title'] = match.group('title').strip()
+                            sub_data['datetime_str'] = match.group('datetime_str').strip()
+                            sub_data['duration'] = match.group('duration').strip()
+                        else:
+                            # Fallback for unexpected formats
+                            sub_data['title'] = full_text
+                            sub_data['datetime_str'] = "N/A"
+                            sub_data['duration'] = "N/A"
+
+                        entry_data["sub_entries"].append(sub_data)
                         j += 1
                     else:
-                        break # Not a sub-row, break the inner loop
+                        break# Not a sub-row, break the inner loop
                 
                 # Determine overall status
                 if not sub_entry_found:

@@ -1,5 +1,7 @@
 import os
 from datetime import datetime
+from typing import Optional, Tuple
+import re
 from dotenv import load_dotenv
 from .utils import generate_random_point
 from src import generative
@@ -131,7 +133,22 @@ def handle_add_logbook_entry(session):
     entries = get_logbook_entries_by_id(session, program_mhs_id)
     if entries:
         for entry in entries:
-            print(f"  - [{entry.get('entry_index')}] {entry.get('title')} on {entry.get('date')}")
+            # Print the main entry
+            print(f"\n[{entry.get('entry_index')}] {entry.get('title')} (on {entry.get('date')})")
+            
+            # Check for and print sub-entries
+            sub_entries = entry.get('sub_entries', [])
+            if sub_entries:
+                for sub in sub_entries:
+                    status_icon = "✅" if sub.get('is_attended') else "❌"
+                    title = sub.get('title', 'N/A')
+                    datetime_str = sub.get('datetime_str', 'N/A')
+                    duration = sub.get('duration', 'N/A')
+                    print(f"  {status_icon} Sub-Entry: {title}")
+                    print(f"      Time:     {datetime_str}")
+                    print(f"      Duration: {duration}")
+            else:
+                print("  - No sub-entries found for this logbook entry.")
     else:
         print("  No entries found yet.")
     print("---------------------------------")
@@ -373,6 +390,167 @@ def handle_bantu_pic(session):
         
         input("\nPress Enter to continue...")
 
+from colorama import init, Fore, Style
+init(autoreset=True)
+
+# --- Helper functions and constants for Timeline Visualization ---
+
+MONTH_MAP = {
+    'januari': 1, 'februari': 2, 'maret': 3, 'april': 4, 'mei': 5, 'juni': 6,
+    'juli': 7, 'agustus': 8, 'september': 9, 'oktober': 10, 'november': 11, 'desember': 12
+}
+def parse_datetime_range(datetime_str: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Parses complex date-time strings from Simaster into start and end datetime objects.
+    Handles same-day ("13:00 - 16:00") and overnight ("19:00 s.d 00:00") formats.
+    """
+    if not datetime_str:
+        return None, None
+
+    datetime_str = datetime_str.lower().replace("wib", "").strip()
+
+    try:
+        # Pattern for overnight ranges (e.g., "8 Juli 2025 19:00 s.d 9 Juli 2025 00:00")
+        overnight_match = re.search(r'(\d{1,2})\s(\w+)\s(\d{4})\s(\d{2}:\d{2})\s+s\.d\s+(\d{1,2})\s(\w+)\s(\d{4})\s(\d{2}:\d{2})', datetime_str)
+        if overnight_match:
+            d1, m1_str, y1, t1, d2, m2_str, y2, t2 = overnight_match.groups()
+            start_dt = datetime(int(y1), MONTH_MAP[m1_str], int(d1), int(t1[:2]), int(t1[3:]))
+            end_dt = datetime(int(y2), MONTH_MAP[m2_str], int(d2), int(t2[:2]), int(t2[3:]))
+            return start_dt, end_dt
+
+        # Pattern for same-day ranges (e.g., "2 Juli 2025 13:00 - 16:00")
+        sameday_match = re.search(r'(\d{1,2})\s(\w+)\s(\d{4})\s(\d{2}:\d{2})\s+-\s+(\d{2}:\d{2})', datetime_str)
+        if sameday_match:
+            d, m_str, y, t1, t2 = sameday_match.groups()
+            start_dt = datetime(int(y), MONTH_MAP[m_str], int(d), int(t1[:2]), int(t1[3:]))
+            end_dt = datetime(int(y), MONTH_MAP[m_str], int(d), int(t2[:2]), int(t2[3:]))
+            return start_dt, end_dt
+        
+        # Fallback for overnight ranges without a start date (e.g., "21:00 s.d 18 Juli 2025 00:00")
+        overnight_fallback_match = re.search(r'(\d{2}:\d{2})\s+s\.d\s+(\d{1,2})\s(\w+)\s(\d{4})\s(\d{2}:\d{2})', datetime_str)
+        if overnight_fallback_match:
+             # This case is tricky as the start date is missing. We can't reliably parse it.
+             return None, None
+
+
+    except (ValueError, KeyError) as e:
+        # This will gracefully handle parsing errors for unexpected date formats
+        return None, None
+        
+    return None, None
+
+def visualize_schedule_plot(events):
+    """
+    Displays a calendar-like plot of all activities, grouped by day.
+    Uses colored blocks to represent activity duration.
+    """
+    if not events:
+        print(f"{Fore.YELLOW}No activities with valid times found to visualize.{Style.RESET_ALL}")
+        return
+
+    # Using the provided current time for context
+    now = datetime.now()
+    print("\n" + "="*85)
+    print(" " * 28 + "VISUALISASI JADWAL KEGIATAN")
+    print(f"{' ' * 24}(Waktu Saat Ini: {now.strftime('%A, %d %b %Y, %H:%M WIB')})")
+    print("="*85 + "\n")
+    print(f"Legenda: {Fore.CYAN}█ Program Utama{Style.RESET_ALL}   {Fore.MAGENTA}█ Program Bantu{Style.RESET_ALL}\n")
+
+    events_by_date = {}
+    for event in events:
+        date_key = event['start_time'].date()
+        if date_key not in events_by_date:
+            events_by_date[date_key] = []
+        events_by_date[date_key].append(event)
+
+    sorted_dates = sorted(events_by_date.keys())
+
+    for date_key in sorted_dates:
+        print(f"--- {date_key.strftime('%A, %d %B %Y')} ---")
+        
+        day_events = sorted(events_by_date[date_key], key=lambda x: x['start_time'])
+        
+        for event in day_events:
+            start_t = event['start_time']
+            end_t = event['end_time']
+            
+            duration_minutes = (end_t - start_t).total_seconds() / 60
+            # Each block represents 15 minutes of activity
+            num_blocks = int(duration_minutes / 15)
+            
+            color = Fore.CYAN if event['type'] == "Program Utama" else Fore.MAGENTA
+            timeline_bar = (color + '█' * num_blocks + Style.RESET_ALL) if num_blocks > 0 else '|'
+            
+            start_str = start_t.strftime('%H:%M')
+            end_str = end_t.strftime('%H:%M')
+            
+            print(f"  [{start_str} - {end_str}] {timeline_bar} {event['title']}")
+        print()
+
+def handle_generate_timeline(session):
+    """
+    Orchestrates fetching all main and assisted program data and calls the visualization function.
+    """
+    print("\n--- Generating Timeline ---")
+    print("Fetching data from all programs, this may take a moment...")
+    
+    all_events = []
+
+    # 1. Fetch data from Main Program Sub-Entries
+    programs = get_kkn_programs(session)
+    if programs:
+        for prog in programs:
+            print(f"\n🔄 Analyzing program: {prog['program_mhs_judul']}"
+                  f" (ID: {prog['program_mhs_id']})")
+            prog['title'] = prog.get('program_mhs_judul', 'Unknown Program')
+            prog['program_mhs_id'] = prog.get('program_mhs_id', 'Unknown ID')
+
+
+            print(f"  - Analyzing program...")
+            entries = get_logbook_entries_by_id(session, prog['program_mhs_id'])
+            if entries:
+                for entry in entries:
+                    for sub_entry in entry.get('sub_entries', []):
+                        start_time, end_time = parse_datetime_range(sub_entry.get('datetime_str'))
+                        if start_time and end_time:
+                            all_events.append({
+                                'title': sub_entry['title'],
+                                'start_time': start_time,
+                                'end_time': end_time,
+                                'type': 'Program Utama'
+                            })
+
+    # 2. Fetch data from Assisted (Bantu) Programs
+    print("  - Analyzing assisted (bantu) programs...")
+    if programs:
+        # Use the first program as an entry point to get the PIC list
+        bantu_entries = get_bantu_pic_entries(session, programs[0])
+        if bantu_entries:
+            for entry in bantu_entries:
+                # --- FIX START ---
+                # Combine the 'date' and 'activity_time' fields for correct parsing.
+                date_str = entry.get('date') # e.g., "Jumat, 18 Juli 2025 "
+                time_str = entry.get('activity_time') # e.g., "18:00 - 23:00 WIB"
+
+                if date_str and time_str:
+                    # Clean up the date string to remove the day name ("Jumat, ")
+                    date_part = date_str.split(',')[-1].strip()
+                    # Construct the full string for the parser
+                    full_datetime_str = f"{date_part} {time_str}"
+                    
+                    start_time, end_time = parse_datetime_range(full_datetime_str)
+                    
+                    if start_time and end_time:
+                        all_events.append({
+                            'title': entry['title'],
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'type': 'Program Bantu'
+                        })
+                # --- FIX END ---
+
+    # 3. Call the visualization function with all collected data
+    visualize_schedule_plot(all_events)
 
 def main():
     """Main function to run the interactive CLI."""
@@ -394,8 +572,9 @@ def main():
         print("[1] Add New Logbook Entry (My Program)")
         print("[2] Add New Sub-Entry (My Program)")
         print("[3] Post Attendance for My Sub-Entry")
-        print("[4] Manage PIC-Assisted Programs (Program Bantu)") 
-        print("[5] Exit")
+        print("[4] Manage PIC-Assisted Programs (Program Bantu)")
+        print("[5] Generate Activity Timeline") 
+        print("[6] Exit") 
         
         choice = input("Enter your choice (1-5): ")
 
@@ -407,7 +586,9 @@ def main():
             handle_post_attendance(session)
         elif choice == '4':
             handle_bantu_pic(session)
-        elif choice == '5':
+        elif choice == '5': 
+            handle_generate_timeline(session)
+        elif choice == '6':
             print("Exiting. Sampai jumpa!")
             break
         else:
