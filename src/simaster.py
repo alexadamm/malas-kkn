@@ -395,76 +395,77 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
         print(f"An unexpected error occurred in get_logbook_entries_by_id: {e}")
         return None
 
-# def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> Optional[List[Dict]]:
-#     """
-#     Navigates to the RPP page for a given program to find and scrape the 'Program Bantu' table.
-#     """
-#     try:
-#         # 1. Get the RPP page URL from the user's own program entry
-#         action_html = entry_point_program.get("action", "")
-#         rpp_url_match = re.search(r"href='([^']+logbook_program_rpp[^']+)'", action_html)
-#         if not rpp_url_match:
-#             print("Could not find RPP URL in the selected program's action HTML.")
-#             return None
-#         rpp_url = rpp_url_match.group(1)
+def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> Optional[List[Dict]]:
+    """
+    Navigates to the RPP page for a given program to find and scrape the 'Program Bantu' table.
+    """
+    try:
+        # 1. Get the RPP page URL from the user's own program entry
+        action_html = entry_point_program.get("action", "")
+        rpp_url_match = re.search(r"href='([^']+logbook_program_rpp[^']+)'", action_html)
+        if not rpp_url_match:
+            print("Could not find RPP URL in the selected program's action HTML.")
+            return None
+        rpp_url = rpp_url_match.group(1)
 
-#         # 2. Navigate to the RPP page
-#         rpp_page_req = ses.get(rpp_url)
-#         rpp_page_req.raise_for_status()
+        # 2. Navigate to the RPP page
+        rpp_page_req = ses.get(rpp_url)
+        rpp_page_req.raise_for_status()
 
-#         tree = fromstring(rpp_page_req.content)
+        tree = fromstring(rpp_page_req.content)
         
-#         # 3. Find the panel for "Program Bantu"
-#         bantu_panel_heading = tree.xpath('//div[@class="panel-heading"]/span[contains(text(), "Program Bantu (Sebagai Anggota)")]')
-#         if not bantu_panel_heading:
-#             # It's possible the panel doesn't exist if there are no programs to assist
-#             return [] 
+        # 3. Find the panel for "Program Bantu"
+        bantu_panel_heading = tree.xpath('//*[@id="subcontent-element"]/div[4]/div[2]/div[2]/table')
+        bantu_panel = bantu_panel_heading[0].getparent().getparent()
+        rows = bantu_panel.xpath('.//table/tbody/tr')
 
-#         bantu_panel = bantu_panel_heading[0].getparent().getparent()
-#         rows = bantu_panel.xpath('.//table/tbody/tr')
-
-#         pic_entries = []
-#         current_main_entry = None
-
-#         for row in rows:
-#             cols = row.findall('td')
-#             # This is a main PIC entry row
-#             if len(cols) >= 6:
-#                 action_link_node = cols[2].find('.//a')
-#                 if action_link_node is None:
-#                     continue
-                
-#                 current_main_entry = {
-#                     "index": int(cols[0].text_content().strip()),
-#                     "title": cols[1].text_content().strip(),
-#                     "kegiatan_url": action_link_node.get("href"),
-#                     "pic": cols[3].text_content().strip(),
-#                     "date": cols[4].text_content().strip(),
-#                     "location": cols[5].text_content().strip(),
-#                     "sub_activities": []
-#                 }
-#                 pic_entries.append(current_main_entry)
+        pic_entries = []
+        
+        for row in rows:
+            cols = row.findall('td')
             
-#             # This is a sub-activity row
-#             elif len(cols) == 1 and current_main_entry:
-#                 sub_activity_full_text = ' '.join(cols[0].text_content().split())
+            if len(cols) == 6:
+                action_link_node = cols[2].find('.//a')
+                if action_link_node is None:
+                    continue
                 
-#                 duration_span = cols[0].find('.//span[@data-original-title="Durasi"]')
-#                 duration = duration_span.text.strip() if duration_span is not None else "[N/A]"
+                main_entry = {
+                    "index": int(cols[0].text_content().strip()),
+                    "title": cols[1].text_content().strip(),
+                    "kegiatan_url": action_link_node.get("href"),
+                    "pic": cols[3].text_content().strip(),
+                    "date": cols[4].text_content().strip(),
+                    "location": cols[5].text_content().strip(),
+                    "durasi": None,
+                    "presensi_done": False,
+                    "presensi_url": None
+                }
+                pic_entries.append(main_entry)
+            
+            elif len(cols) == 2 and pic_entries:
+                duration_span = row.find('.//span[@title="Durasi"]')
+                if duration_span is not None:
+                    duration_text = duration_span.text_content().strip().strip('[]')
+                    pic_entries[-1]['durasi'] = duration_text
                 
-#                 current_main_entry["sub_activities"].append({
-#                     "full_text": sub_activity_full_text,
-#                     "duration": duration
-#                 })
+                done_span_list = row.xpath('.//span[contains(@class, "label-success")]')
+                if done_span_list:
+                    done_span = done_span_list[0]
+                    if 'Sudah Presensi' in done_span.text_content():
+                        pic_entries[-1]['presensi_done'] = True
+                else:
+                    presensi_link = row.find('.//a[@title="Presensi"]')
+                    if presensi_link is not None:
+                        pic_entries[-1]['presensi_url'] = presensi_link.get('ajaxify')
+        # print(pic_entries)
+        return pic_entries
         
-#         return pic_entries
-
-#     except requests.exceptions.RequestException as e:
-#         print(f"An error occurred while fetching PIC entries: {e}")
-#         return None
-#     except Exception as e:
-#         print(f"An unexpected error occurred in get_bantu_pic_entries: {e}")
-#         return None
+    except requests.exceptions.RequestException as e:
+        print(f"An HTTP error occurred: {e}")
+        return None
+    except (IndexError, AttributeError) as e:
+        print(f"Failed to parse the HTML structure: {e}")
+        return None
 
 def create_sub_entry_base(
     ses: requests.Session,

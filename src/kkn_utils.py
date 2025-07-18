@@ -18,7 +18,7 @@ load_dotenv()
 
 # --- Helper Functions for Interactive Selection ---
 
-def select_program(session):
+def select_program(session, auto=False):
     """Lists KKN programs and prompts the user to select one."""
     print("\nFetching KKN programs...")
     programs = get_kkn_programs(session)
@@ -32,6 +32,9 @@ def select_program(session):
     
     while True:
         try:
+            if auto:
+                print("\nAuto-selecting the first program...")
+                return programs[0]
             choice = int(input(f"Please select a program (1-{len(programs)}): "))
             if 1 <= choice <= len(programs):
                 return programs[choice-1]
@@ -94,16 +97,19 @@ def select_sub_entry(session, main_entry):
 
 def select_pic_entry(session, pic_entries):
     """Lists PIC-assisted programs and prompts the user to select one."""
-    print("\nAvailable PIC-Assisted Programs:")
-    for entry in pic_entries:
-        print(f"  [{entry.get('index')}] {entry.get('title')} (PIC: {entry.get('pic')})")
+    # Sort entries to show those with unattended activities first
+    sorted_entries = sorted(pic_entries, key=lambda x: any(not sub.get('is_attended', True) for sub in x.get('sub_activities', [])))
+
+    print("\nAvailable Program Bantu (unattended first):")
+    for i, entry in enumerate(sorted_entries):
+        status = " (Needs Attention)" if any(not sub.get('is_attended', True) for sub in entry.get('sub_activities', [])) else ""
+        print(f"  [{i+1}] {entry.get('title')} (PIC: {entry.get('pic')}){status}")
 
     while True:
         try:
-            choice = int(input(f"Please select a program to assist (1-{len(pic_entries)}): "))
-            selected_entry = next((e for e in pic_entries if e.get("index") == choice), None)
-            if selected_entry:
-                return selected_entry
+            choice = int(input(f"Please select a program to assist (1-{len(sorted_entries)}): "))
+            if 1 <= choice <= len(sorted_entries):
+                return sorted_entries[choice-1]
             else:
                 print("Invalid choice. Please try again.")
         except ValueError:
@@ -307,10 +313,31 @@ def handle_post_attendance(session):
     else:
         print("\nFailed to post attendance.")
 
+def display_pic_entries(entries):
+    """Displays a formatted list of PIC-assisted program entries."""
+    if not entries:
+        print("\nNo entries to display.")
+        return
+
+    # A simple header for the table
+    print(f"\n{'No.':<4} {'PIC':<25} {'Program Title':<45} {'Status':<15}")
+    print("-" * 91)
+    
+    for entry in entries:
+        # Use emojis for a quick visual status
+        status = "✅ Sudah" if entry.get('presensi_done') else "❌ Belum"
+        
+        print(f"{entry.get('index', ''):<4} "
+              f"{entry.get('pic', 'N/A').split(' ')[0]:<10} "
+              f"{entry.get('title', 'N/A'):<20} "
+              f"{entry.get('date', 'N/A'):<20} "
+              f"{entry.get('durasi', 'N/A'):<10} "
+              f"{status:<15}")
+
 def handle_bantu_pic(session):
-    """Guides user to create a sub-entry for a PIC-assisted program."""
-    print("\nTo find PIC-assisted programs, we first need to navigate via one of your own programs.")
-    my_program = select_program(session)
+    """Guides user to view details of PIC-assisted programs."""
+    print("\nFetching PIC-assisted program data...")
+    my_program = select_program(session, auto=True)
     if not my_program:
         return
 
@@ -319,28 +346,31 @@ def handle_bantu_pic(session):
         print("No PIC-assisted programs could be found from that entry point.")
         return
 
-    selected_pic_entry = select_pic_entry(session, pic_entries)
-    if not selected_pic_entry:
-        return
-    
-    # Display existing sub-activities for context
-    print(f"\n--- Existing Activities for {selected_pic_entry.get('pic')} ---")
-    if selected_pic_entry.get('sub_activities'):
-        for activity in selected_pic_entry.get('sub_activities'):
-            print(f"  - {activity.get('full_text')} {activity.get('duration')}")
-    else:
-        print("  No sub-activities found for this entry yet.")
-    print("----------------------------------------------------")
+    while True:
+        print("\n--- Program Bantu Menu ---")
+        print("[1] View All PIC-Assisted Programs")
+        print("[2] View Only Programs Needing Attendance ('Belum Presensi')")
+        print("[3] Back to Main Menu")
+        
+        choice = input("Enter your choice (1-3): ")
 
-    proker_title = selected_pic_entry.get("title", "Judul Proker Tidak Ditemukan")
-    
-    form_details = get_sub_entry_details_from_user(proker_title)
-
-    success = create_bantu_pic_sub_entry(session, selected_pic_entry, form_details)
-    if success:
-        print("\nAssisted sub-entry created successfully.")
-    else:
-        print("\nFailed to create assisted sub-entry.")
+        if choice == '1':
+            print("\n--- All PIC-Assisted Programs ---")
+            display_pic_entries(pic_entries)
+        elif choice == '2':
+            print("\n--- Programs Needing Attendance ---")
+            unattended_entries = [e for e in pic_entries if not e.get('presensi_done')]
+            if unattended_entries:
+                display_pic_entries(unattended_entries)
+            else:
+                print("\n🎉 Good job! No programs are currently awaiting attendance.")
+        elif choice == '3':
+            print("Returning to the main menu...")
+            break
+        else:
+            print("Invalid choice. Please try again.")
+        
+        input("\nPress Enter to continue...")
 
 
 def main():
@@ -363,7 +393,7 @@ def main():
         print("[1] Add New Logbook Entry (My Program)")
         print("[2] Add New Sub-Entry (My Program)")
         print("[3] Post Attendance for My Sub-Entry")
-        # print("[4] Help Fill PIC Logbook (Program Bantu)")
+        print("[4] Manage PIC-Assisted Programs (Program Bantu)") 
         print("[5] Exit")
         
         choice = input("Enter your choice (1-5): ")
@@ -374,8 +404,8 @@ def main():
             handle_create_sub_entry(session)
         elif choice == '3':
             handle_post_attendance(session)
-        # elif choice == '4':
-        #     handle_bantu_pic(session)
+        elif choice == '4':
+            handle_bantu_pic(session)
         elif choice == '5':
             print("Exiting. Sampai jumpa!")
             break
