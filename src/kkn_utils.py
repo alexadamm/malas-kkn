@@ -331,6 +331,7 @@ def display_pic_entries(entries):
               f"{entry.get('pic', 'N/A').split(' ')[0]:<10} "
               f"{entry.get('title', 'N/A'):<20} "
               f"{entry.get('date', 'N/A'):<20} "
+              f"{entry.get('activity_time', 0):<5} "
               f"{entry.get('durasi', 'N/A'):<10} "
               f"{status:<15}")
 

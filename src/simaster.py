@@ -437,6 +437,7 @@ def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> O
                     "date": cols[4].text_content().strip(),
                     "location": cols[5].text_content().strip(),
                     "durasi": None,
+                    "activity_time": None,
                     "presensi_done": False,
                     "presensi_url": None
                 }
@@ -457,6 +458,13 @@ def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> O
                     presensi_link = row.find('.//a[@title="Presensi"]')
                     if presensi_link is not None:
                         pic_entries[-1]['presensi_url'] = presensi_link.get('ajaxify')
+                cell_text = cols[1].text_content()
+                # Regex to find the string starting from the first HH:MM until "WIB"
+                time_match = re.search(r'(\d{2}:\d{2}.*?WIB)', cell_text)
+                if time_match:
+                    # Clean up the string by removing extra whitespace
+                    time_str = ' '.join(time_match.group(1).split())
+                    pic_entries[-1]['activity_time'] = time_str
         # print(pic_entries)
         return pic_entries
         
