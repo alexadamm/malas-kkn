@@ -398,7 +398,8 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
 
 def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> Optional[List[Dict]]:
     """
-    Navigates to the RPP page for a given program to find and scrape the 'Program Bantu' table.
+    Navigates to the RPP page for a given program to find and scrape the 'Program Bantu' table,
+    including all of its nested sub-entries.
     """
     try:
         # 1. Get the RPP page URL from the user's own program entry
@@ -417,63 +418,79 @@ def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> O
         
         # 3. Find the panel for "Program Bantu"
         bantu_panel_heading = tree.xpath('//*[@id="subcontent-element"]/div[4]/div[2]/div[2]/table')
+        if not bantu_panel_heading:
+            print("Could not find the 'Program Bantu' panel.")
+            return []
         bantu_panel = bantu_panel_heading[0].getparent().getparent()
         rows = bantu_panel.xpath('.//table/tbody/tr')
 
         pic_entries = []
-        
-        for row in rows:
+        i = 0
+        while i < len(rows):
+            row = rows[i]
             cols = row.findall('td')
-            
-            if len(cols) == 6:
-                action_link_node = cols[2].find('.//a')
-                if action_link_node is None:
-                    continue
-                
+
+            # Case 1: Main Entry Row (has 6 columns with content in the first cell)
+            if len(cols) == 6 and cols[0].text_content().strip():
                 main_entry = {
                     "index": int(cols[0].text_content().strip()),
                     "title": cols[1].text_content().strip(),
-                    "kegiatan_url": action_link_node.get("href"),
                     "pic": cols[3].text_content().strip(),
                     "date": cols[4].text_content().strip(),
                     "location": cols[5].text_content().strip(),
-                    "durasi": None,
-                    "activity_time": None,
-                    "presensi_done": False,
-                    "presensi_url": None
+                    "sub_entries": []  # Initialize list for sub-entries
                 }
                 pic_entries.append(main_entry)
-            
-            elif len(cols) == 2 and pic_entries:
-                duration_span = row.find('.//span[@title="Durasi"]')
-                if duration_span is not None:
-                    duration_text = duration_span.text_content().strip().strip('[]')
-                    pic_entries[-1]['durasi'] = duration_text
+                i += 1
+                continue
+
+            # Case 2: Sub-entry Row (has 2 columns and a specific text pattern)
+            if len(cols) == 2 and pic_entries:
+                cell_text = cols[1].text_content().strip()
                 
-                done_span_list = row.xpath('.//span[contains(@class, "label-success")]')
-                if done_span_list:
-                    done_span = done_span_list[0]
-                    if 'Sudah Presensi' in done_span.text_content():
-                        pic_entries[-1]['presensi_done'] = True
-                else:
-                    presensi_link = row.find('.//a[@title="Presensi"]')
-                    if presensi_link is not None:
-                        pic_entries[-1]['presensi_url'] = presensi_link.get('ajaxify')
-                cell_text = cols[1].text_content()
-                # Regex to find the string starting from the first HH:MM until "WIB"
-                time_match = re.search(r'(\d{2}:\d{2}.*?WIB)', cell_text)
-                if time_match:
-                    # Clean up the string by removing extra whitespace
-                    time_str = ' '.join(time_match.group(1).split())
-                    pic_entries[-1]['activity_time'] = time_str
-        # print(pic_entries)
+                # Regex to find a sub-entry line with title, datetime, and duration
+                sub_entry_pattern = re.compile(
+                    r'^(?P<title>.*?)\s\((?P<datetime_str>.*?WIB)\)\s\[(?P<duration>.*?)\]', 
+                    re.DOTALL
+                )
+                match = sub_entry_pattern.search(cell_text)
+
+                if match:
+                    # Found a valid sub-entry line, extract its details
+                    sub_title = match.group('title').strip()
+                    datetime_str = match.group('datetime_str').strip()
+                    
+                    # The attendance status is in the *next* row.
+                    is_attended = False
+                    if (i + 1) < len(rows):
+                        row_text = rows[i].text_content()
+                        next_row_text = rows[i+1].text_content()
+                        next_next_row_text = rows[i+2].text_content() if (i + 2) < len(rows) else ""
+                        print(next_row_text)
+                        if "Sudah Presensi" in next_row_text or "Sudah Presensi" in next_next_row_text or "Sudah Presensi" in row_text:
+                            is_attended = True
+                            i += 1 
+                    
+                    sub_entry_data = {
+                        'title': sub_title,
+                        'datetime_str': datetime_str,
+                        'is_attended': is_attended
+                    }
+                    
+                    # Append the parsed sub-entry to the last main entry found
+                    pic_entries[-1]['sub_entries'].append(sub_entry_data)
+            
+            # Move to the next row
+            i += 1
+        print(f"Found {len(pic_entries)} main entries with sub-entries in Program Bantu.")
+        print(pic_entries)
         return pic_entries
-        
+
     except requests.exceptions.RequestException as e:
         print(f"An HTTP error occurred: {e}")
         return None
     except (IndexError, AttributeError) as e:
-        print(f"Failed to parse the HTML structure: {e}")
+        print(f"Failed to parse the HTML structure for Program Bantu: {e}")
         return None
 
 def create_sub_entry_base(
