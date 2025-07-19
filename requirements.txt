@@ -2,3 +2,4 @@ requests
 cachelib
 lxml
 beautifulsoup4
+dotenv

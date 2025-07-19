@@ -16,24 +16,23 @@ def main():
     username = os.getenv("SIMASTER_USERNAME")
     password = os.getenv("SIMASTER_PASSWORD")
 
-    KKN_LOCATION_LATITUDE = float(os.getenv("KKN_LOCATION_LATITUDE"))
-    KKN_LOCATION_LONGITUDE = float(os.getenv("KKN_LOCATION_LONGITUDE"))
-    KKN_LOCATION_RADIUS_METERS = int(os.getenv("KKN_LOCATION_RADIUS_METERS")) # radius in meters for random point generation
-
     if not username or not password:
         print("Error: SIMASTER_USERNAME and SIMASTER_PASSWORD environment variables not set.")
         return
 
-    # --- initial login ---
-    # the session will be reused for all subsequent attendance posts (cos i found no expiration so far)
-    session = get_simaster_session(username, password)
-    if not session:
-        print("Login failed. Exiting server.")
+    KKN_LOCATION_LATITUDE = float(os.getenv("KKN_LOCATION_LATITUDE"))
+    KKN_LOCATION_LONGITUDE = float(os.getenv("KKN_LOCATION_LONGITUDE"))
+    KKN_LOCATION_RADIUS_METERS = int(os.getenv("KKN_LOCATION_RADIUS_METERS")) # radius in meters for random point generation
+
+    if not (KKN_LOCATION_LATITUDE and KKN_LOCATION_LONGITUDE and KKN_LOCATION_RADIUS_METERS):
+        print("error: KKN_LOCATION_LATITUDE, KKN_LOCATION_LONGITUDE, and KKN_LOCATION_RADIUS_METERS environment variables must be set.")
         return
 
-    print("\nLogin successful. Starting scheduling loop...")
-
     def submit_kkn_attendance():
+        session = get_simaster_session(username, password)
+        if not session:
+            print("Login failed. Exiting server.")
+            return
         random_lat, random_lon = generate_random_point(
             KKN_LOCATION_LATITUDE,
             KKN_LOCATION_LONGITUDE,
