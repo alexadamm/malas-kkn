@@ -342,7 +342,8 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
                 }
 
                 # Look ahead for all consecutive sub-entry rows
-                all_sub_attended = True
+                all_sub_attended = False
+                notattendedflag = True
                 sub_entry_found = False
                 j = i + 1
                 while j < len(rows):
@@ -351,7 +352,10 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
                     if len(sub_cols) == 2 and not sub_cols[0].text_content().strip():
                         full_text = ' '.join(sub_cols[1].text_content().split())
                         is_attended = "Sudah Presensi" in full_text
-
+                        if is_attended and notattendedflag:
+                            all_sub_attended = True
+                        elif not is_attended:
+                            notattendedflag = False
                         # More powerful regex to capture title, datetime, and duration
                         sub_entry_pattern = re.compile(
                             r'^(?P<title>.*?)\s+'
@@ -370,7 +374,7 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
                             sub_data['title'] = full_text
                             sub_data['datetime_str'] = "N/A"
                             sub_data['duration'] = "N/A"
-
+                        sub_entry_found = True
                         entry_data["sub_entries"].append(sub_data)
                         j += 1
                     else:
