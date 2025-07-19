@@ -61,7 +61,8 @@ def get_simaster_session(
         response_json = req.json()
         if response_json.get("isLogin") == 1:
             print(f"Successfully logged in as {response_json.get('namaLengkap')}.")
-            cache.set(key, ses, timeout=86400)
+            # cache for 2 days
+            cache.set(key, ses, timeout=60 * 60 * 24 * 2)
             return ses
         else:
             print("Login failed. Please check your username and password.")
