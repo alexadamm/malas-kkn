@@ -372,7 +372,7 @@ def handle_bantu_pic(session):
     print("\n" + "="*85)
     print(" " * 30 + "DAFTAR PROGRAM BANTU")
     print("="*85 + "\n")
-
+    print(len(pic_entries), "program bantu ditemukan.")
     for entry in pic_entries:
         print(f"{Fore.YELLOW}▶ {entry.get('title', 'N/A')}{Style.RESET_ALL}")
         print(f"  PIC: {entry.get('pic', 'N/A')}")
