@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from .utils import generate_random_point
 from src import generative
 from colorama import init, Fore, Style
+import getpass
 init(autoreset=True)
 from src.simaster import (
     get_simaster_session, 
@@ -17,6 +18,7 @@ from src.simaster import (
     add_kkn_logbook_entry_by_id,
     post_attendance_for_sub_entry
 )
+from src.exporter import generate_schedule_html, export_to_html_file, export_to_pdf
 
 load_dotenv()
 
@@ -437,28 +439,29 @@ def parse_datetime_range(datetime_str: Optional[str]) -> Tuple[Optional[datetime
         
     return None, None
 
+
 def visualize_schedule_plot(events: List[Dict], program_colors: Dict[str, str]):
     """
-    Displays a calendar-like plot of all activities, grouped by day.
-    Uses colored blocks to represent activity duration.
+    Displays the schedule in a Gantt-like chart in the console.
     """
     if not events:
-        print(f"{Fore.YELLOW}No activities with valid times found to visualize.{Style.RESET_ALL}")
+        print("No events to visualize.")
         return
 
-    # Set the current time based on the provided context
-    now = datetime(2025, 7, 19, 8, 48)
     print("\n" + "="*85)
     print(" " * 28 + "VISUALISASI JADWAL KEGIATAN")
-    print(f"{' ' * 24}(Waktu Saat Ini: {now.strftime('%A, %d %b %Y, %H:%M WIB')})")
+    print(f" " * 20 + f"(Waktu Saat Ini: {datetime.now().strftime('%A, %d %b %Y, %H:%M WIB')})")
     print("="*85 + "\n")
-    
+
+    # --- Legend ---
     print("Legenda:")
     for title, color in program_colors.items():
-        print(f"  {color}█ {title[:50]}{Style.RESET_ALL}")
-    print(f"  {Fore.MAGENTA}█ Program Bantu{Style.RESET_ALL}\n")
+        print(f"  {color}█ {Style.RESET_ALL}{title[:50]}")
+    if any(e['type'] == 'Program Bantu' for e in events):
+        print(f"  {Fore.MAGENTA}█ {Style.RESET_ALL}Program Bantu")
+    print("")
 
-
+    # --- Group events by date ---
     events_by_date = {}
     for event in events:
         date_key = event['start_time'].date()
@@ -467,32 +470,26 @@ def visualize_schedule_plot(events: List[Dict], program_colors: Dict[str, str]):
         events_by_date[date_key].append(event)
 
     sorted_dates = sorted(events_by_date.keys())
-
     for date_key in sorted_dates:
         print(f"--- {date_key.strftime('%A, %d %B %Y')} ---")
-        
         day_events = sorted(events_by_date[date_key], key=lambda x: x['start_time'])
-        
         for event in day_events:
-            start_t = event['start_time']
-            end_t = event['end_time']
-            
-            duration_minutes = (end_t - start_t).total_seconds() / 60
-            num_blocks = int(duration_minutes / 15)
+            start_str = event['start_time'].strftime('%H:%M')
+            end_str = event['end_time'].strftime('%H:%M')
+            duration_hours = (event['end_time'] - event['start_time']).total_seconds() / 3600
+            bar_length = int(duration_hours * 4) 
+            bar = '█' * bar_length
             
             color = event.get('color', Fore.WHITE)
-            timeline_bar = (color + '█' * num_blocks + Style.RESET_ALL) if num_blocks > 0 else '|'
-            
-            start_str = start_t.strftime('%H:%M')
-            end_str = end_t.strftime('%H:%M')
-            
-            print(f"  [{start_str} - {end_str}] {timeline_bar} {event['title']}")
-        print()
+            print(f"  [{start_str} - {end_str}] {color}{bar}{Style.RESET_ALL} {event['title']}")
+        print("")
+
+
 
 def handle_generate_timeline(session):
     """
-    Orchestrates fetching all main and assisted program data and calls the visualization function.
-    Also calculates and displays a summary of activity durations.
+    Orchestrates fetching all program data, displays it in the console,
+    and then offers options to export the timeline to HTML and/or PDF.
     """
     print("\n--- Generating Timeline ---")
     print("Fetching data from all programs, this may take a moment...")
@@ -504,79 +501,117 @@ def handle_generate_timeline(session):
     color_index = 0
 
     programs = get_kkn_programs(session)
-    if programs:
-        for prog in programs:
+    if not programs:
+        print(f"{Fore.YELLOW}No programs found to generate a timeline.{Style.RESET_ALL}")
+        return
 
-            prog['title'] = prog.get('program_mhs_judul', 'Unknown Program')
-            prog['program_mhs_id'] = prog.get('program_mhs_id', 'Unknown ID')
+    for prog in programs:
+        prog['title'] = prog.get('program_mhs_judul', 'Unknown Program')
+        prog['program_mhs_id'] = prog.get('program_mhs_id', 'Unknown ID')
+        prog_title = prog['title']
+        if prog_title not in program_colors:
+            program_colors[prog_title] = MAIN_PROGRAM_COLORS[color_index % len(MAIN_PROGRAM_COLORS)]
+            color_index += 1
+            main_program_hours[prog_title] = 0.0
 
-            # Initialize program colors and hours
-            prog_title = prog['title']
-            if prog_title not in program_colors:
-                program_colors[prog_title] = MAIN_PROGRAM_COLORS[color_index % len(MAIN_PROGRAM_COLORS)]
-                color_index += 1
-                main_program_hours[prog_title] = 0.0
-
-        for prog in programs:
-            prog_title = prog['title']
-            print(f"  - Menganalisis program utama: {prog_title[:40]}...")
-            entries = get_logbook_entries_by_id(session, prog['program_mhs_id'])
-            if entries:
-                for entry in entries:
-                    for sub_entry in entry.get('sub_entries', []):
-                        start_time, end_time = parse_datetime_range(sub_entry.get('datetime_str'))
-                        if start_time and end_time:
-                            duration = (end_time - start_time).total_seconds() / 3600.0
-                            main_program_hours[prog_title] += duration
-                            all_events.append({
-                                'title': sub_entry['title'],
-                                'start_time': start_time,
-                                'end_time': end_time,
-                                'type': 'Program Utama',
-                                'color': program_colors[prog_title]
-                            })
-
-    print("  - Menganalisis program bantu...")
-    if programs:
-        bantu_entries = get_bantu_pic_entries(session, programs[0])
-        if bantu_entries:
-            # --- UPDATED LOGIC for Program Bantu Sub-Entries ---
-            for entry in bantu_entries:
+    for prog in programs:
+        prog_title = prog['title']
+        print(f"  - Menganalisis program utama: {prog_title[:40]}...")
+        entries = get_logbook_entries_by_id(session, prog['program_mhs_id'])
+        if entries:
+            for entry in entries:
                 for sub_entry in entry.get('sub_entries', []):
                     start_time, end_time = parse_datetime_range(sub_entry.get('datetime_str'))
                     if start_time and end_time:
                         duration = (end_time - start_time).total_seconds() / 3600.0
-                        bantu_hours += duration
+                        main_program_hours[prog_title] += duration
                         all_events.append({
                             'title': sub_entry['title'],
                             'start_time': start_time,
                             'end_time': end_time,
-                            'type': 'Program Bantu',
-                            'color': Fore.MAGENTA
+                            'type': prog_title,
+                            'color': program_colors[prog_title]
                         })
 
+    print("  - Menganalisis program bantu...")
+    bantu_entries = get_bantu_pic_entries(session, programs[0])
+    if bantu_entries:
+        for entry in bantu_entries:
+            for sub_entry in entry.get('sub_entries', []):
+                start_time, end_time = parse_datetime_range(sub_entry.get('datetime_str'))
+                if start_time and end_time:
+                    duration = (end_time - start_time).total_seconds() / 3600.0
+                    bantu_hours += duration
+                    all_events.append({
+                        'title': sub_entry['title'],
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'type': 'Program Bantu',
+                        'color': Fore.MAGENTA
+                    })
+    
+    if not all_events:
+        print(f"{Fore.YELLOW}No activities found to generate a timeline.{Style.RESET_ALL}")
+        return
+
+    # --- 1. Display timeline and summary in the console ---
     visualize_schedule_plot(all_events, program_colors)
+    total_hours = sum(main_program_hours.values()) + bantu_hours
 
     print("\n" + "="*85)
     print(" " * 30 + "RINGKASAN DURASI KEGIATAN")
     print("="*85 + "\n")
-
-    total_hours = 0
     for title, hours in main_program_hours.items():
         color = program_colors.get(title, Fore.WHITE)
         print(f"  {color}▶ {title[:50]:<55}{Style.RESET_ALL} {hours: >6.1f} jam")
-        total_hours += hours
-    
-    print(f"  {Fore.MAGENTA}▶ {'Program Bantu (PIC Assistance)':<55}{Style.RESET_ALL} {bantu_hours: >6.1f} jam")
-    total_hours += bantu_hours
-
+    if bantu_hours > 0:
+        print(f"  {Fore.MAGENTA}▶ {'Program Bantu (PIC Assistance)':<55}{Style.RESET_ALL} {bantu_hours: >6.1f} jam")
     print("-"*85)
     print(f"  {'Total Keseluruhan:':<57} {total_hours: >6.1f} jam")
     print("="*85)
+
+    # --- 2. Ask the user for their preferred export format ---
+    while True:
+        choice = input("\nChoose an export option:\n[1] Export to HTML\n[2] Export to PDF\n[3] Export to Both\n[4] Skip export\nEnter your choice (1-4): ").strip()
+        if choice in ['1', '2', '3', '4']:
+            break
+        else:
+            print(f"{Fore.RED}Invalid choice. Please enter a number between 1 and 4.{Style.RESET_ALL}")
+
+    if choice == '4':
+        print("\nSkipping export. Returning to main menu.")
+        return
+
+    # --- 3. Generate HTML content and call the chosen exporter(s) ---
+    print(f"\n{Fore.CYAN}Generating content for export...{Style.RESET_ALL}")
+    html_content = generate_schedule_html(all_events, program_colors, main_program_hours, total_hours)
+    
+    if choice == '1': # HTML only
+        export_to_html_file(html_content)
+    elif choice == '2': # PDF only
+        export_to_pdf(html_content)
+    elif choice == '3': # Both
+        export_to_html_file(html_content)
+        export_to_pdf(html_content)
+
+def handle_change_account():
+    print("Input username and password for SIMASTER:")
+    username = input("Username: ").strip()
+    password = getpass.getpass('Password:')
+    if not username or not password:
+        print("Username and password cannot be empty.")
+        return
+    session = get_simaster_session(username, password)
+    if session:
+        print(f"{Fore.GREEN}Login successful!{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.RED}Login failed. Please check your credentials.{Style.RESET_ALL}")
+    return session
 def main():
     """Main function to run the interactive CLI."""
     username = os.getenv("SIMASTER_USERNAME")
     password = os.getenv("SIMASTER_PASSWORD")
+
     if not username or not password:
         print("Error: SIMASTER_USERNAME and SIMASTER_PASSWORD environment variables not set in .env file.")
         return
@@ -595,7 +630,8 @@ def main():
         print("[3] Post Attendance for My Sub-Entry")
         print("[4] Manage PIC-Assisted Programs (Program Bantu)")
         print("[5] Generate Activity Timeline") 
-        print("[6] Exit") 
+        print("[6] Change Account")
+        print("[7] Exit") 
         
         choice = input("Enter your choice (1-5): ")
 
@@ -610,6 +646,9 @@ def main():
         elif choice == '5': 
             handle_generate_timeline(session)
         elif choice == '6':
+            print("\nChanging account...")
+            session = handle_change_account()
+        elif choice == '7':
             print("Exiting. Sampai jumpa!")
             break
         else:
