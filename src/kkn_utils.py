@@ -7,6 +7,7 @@ from .utils import generate_random_point
 from src import generative
 from colorama import init, Fore, Style
 import getpass
+from collections import defaultdict
 init(autoreset=True)
 from src.simaster import (
     get_simaster_session, 
@@ -440,6 +441,7 @@ def parse_datetime_range(datetime_str: Optional[str]) -> Tuple[Optional[datetime
     return None, None
 
 
+
 def visualize_schedule_plot(events: List[Dict], program_colors: Dict[str, str]):
     """
     Displays the schedule in a Gantt-like chart in the console.
@@ -484,8 +486,6 @@ def visualize_schedule_plot(events: List[Dict], program_colors: Dict[str, str]):
             print(f"  [{start_str} - {end_str}] {color}{bar}{Style.RESET_ALL} {event['title']}")
         print("")
 
-
-
 def handle_generate_timeline(session):
     """
     Orchestrates fetching all program data, displays it in the console,
@@ -495,10 +495,11 @@ def handle_generate_timeline(session):
     print("Fetching data from all programs, this may take a moment...")
     
     all_events = []
-    main_program_hours = {}
+    main_program_hours = defaultdict(float)
     bantu_hours = 0.0
     program_colors = {}
     color_index = 0
+    pic_hours = defaultdict(float) # New: To store hours per PIC
 
     programs = get_kkn_programs(session)
     if not programs:
@@ -512,7 +513,6 @@ def handle_generate_timeline(session):
         if prog_title not in program_colors:
             program_colors[prog_title] = MAIN_PROGRAM_COLORS[color_index % len(MAIN_PROGRAM_COLORS)]
             color_index += 1
-            main_program_hours[prog_title] = 0.0
 
     for prog in programs:
         prog_title = prog['title']
@@ -537,11 +537,13 @@ def handle_generate_timeline(session):
     bantu_entries = get_bantu_pic_entries(session, programs[0])
     if bantu_entries:
         for entry in bantu_entries:
+            pic_name = entry.get('pic', 'Unknown PIC')
             for sub_entry in entry.get('sub_entries', []):
                 start_time, end_time = parse_datetime_range(sub_entry.get('datetime_str'))
                 if start_time and end_time:
                     duration = (end_time - start_time).total_seconds() / 3600.0
                     bantu_hours += duration
+                    pic_hours[pic_name] += duration # New: Accumulate hours for each PIC
                     all_events.append({
                         'title': sub_entry['title'],
                         'start_time': start_time,
@@ -584,7 +586,14 @@ def handle_generate_timeline(session):
 
     # --- 3. Generate HTML content and call the chosen exporter(s) ---
     print(f"\n{Fore.CYAN}Generating content for export...{Style.RESET_ALL}")
-    html_content = generate_schedule_html(all_events, program_colors, main_program_hours, total_hours)
+    html_content = generate_schedule_html(
+        events=all_events,
+        program_colors=program_colors,
+        duration_summary=main_program_hours,
+        total_hours=total_hours,
+        pic_hours=pic_hours, # New: Pass PIC data
+        bantu_hours=bantu_hours
+    )
     
     if choice == '1': # HTML only
         export_to_html_file(html_content)
@@ -593,6 +602,77 @@ def handle_generate_timeline(session):
     elif choice == '3': # Both
         export_to_html_file(html_content)
         export_to_pdf(html_content)
+
+def handle_check_all_attendance(session):
+    """
+    Checks and displays the attendance status for all sub-entries in main and assisted programs.
+    """
+    print("\n--- Checking All Attendance ---")
+    print("Fetching data, this may take a moment...")
+
+    # --- 1. Check Main Programs (Program Utama) ---
+    print(f"\n{Fore.YELLOW}--- Program Utama ---{Style.RESET_ALL}")
+    programs = get_kkn_programs(session)
+    if not programs:
+        print(f"{Fore.YELLOW}No main programs found.{Style.RESET_ALL}")
+        return
+
+    for prog in programs:
+        prog_title = prog.get('program_mhs_judul', 'Unknown Program')
+        print(f"\n{Fore.CYAN}Program: {prog_title}{Style.RESET_ALL}")
+        entries = get_logbook_entries_by_id(session, prog['program_mhs_id'])
+        if not entries:
+            print("  No logbook entries found for this program.")
+            continue
+        
+        found_sub_entry = False
+        for entry in entries:
+            for sub_entry in entry.get('sub_entries', []):
+                # print(sub_entry)
+                found_sub_entry = True
+                date_str = sub_entry.get('datetime_str', 'No date').split(' - ')[0]
+                title = sub_entry.get('title', 'No Title')
+                is_hadir = sub_entry.get('is_attended', False)
+                
+                if is_hadir:
+                    status_text = f"{Fore.GREEN}Hadir{Style.RESET_ALL}"
+                else:
+                    status_text = f"{Fore.RED}Belum Hadir{Style.RESET_ALL}"
+                
+                print(f"  - [{status_text}] {date_str} - {title}")
+        
+        if not found_sub_entry:
+            print("  No sub-entries found for this program.")
+
+    # --- 2. Check Assisted Programs (Program Bantu) ---
+    print(f"\n{Fore.YELLOW}--- Program Bantu (PIC Assistance) ---{Style.RESET_ALL}")
+    bantu_entries = get_bantu_pic_entries(session, programs[0]) # programs[0] is just to get a valid program context
+    if not bantu_entries:
+        print(f"{Fore.YELLOW}No assisted program entries found.{Style.RESET_ALL}")
+        return
+
+    for entry in bantu_entries:
+        pic_name = entry.get('pic', 'Unknown PIC')
+        print(f"\n{Fore.MAGENTA}PIC: {pic_name}{Style.RESET_ALL}")
+        
+        if not entry.get('sub_entries'):
+            print("  No sub-entries found for this PIC.")
+            continue
+
+        for sub_entry in entry.get('sub_entries', []):
+            # print(sub_entry)
+            date_str = sub_entry.get('datetime_str', 'No date').split(' - ')[0]
+            title = sub_entry.get('title', 'No Title')
+            is_hadir = sub_entry.get('is_attended', False)
+
+            if is_hadir:
+                status_text = f"{Fore.GREEN}Hadir{Style.RESET_ALL}"
+            else:
+                status_text = f"{Fore.RED}Belum Hadir{Style.RESET_ALL}"
+            
+            print(f"  - [{status_text}] {date_str} - {title}")
+
+    print("\n--- Attendance Check Complete ---")
 
 def handle_change_account():
     print("Input username and password for SIMASTER:")
@@ -630,10 +710,11 @@ def main():
         print("[3] Post Attendance for My Sub-Entry")
         print("[4] Manage PIC-Assisted Programs (Program Bantu)")
         print("[5] Generate Activity Timeline") 
-        print("[6] Change Account")
-        print("[7] Exit") 
+        print("[6] Handle Attendance Check for All Programs")
+        print("[7] Change Account")
+        print("[8] Exit")
         
-        choice = input("Enter your choice (1-5): ")
+        choice = input("Enter your choice (1-8): ")
 
         if choice == '1':
             handle_add_logbook_entry(session)
@@ -646,9 +727,12 @@ def main():
         elif choice == '5': 
             handle_generate_timeline(session)
         elif choice == '6':
+            handle_check_all_attendance(session)
+            continue
+        elif choice == '7':
             print("\nChanging account...")
             session = handle_change_account()
-        elif choice == '7':
+        elif choice == '8':
             print("Exiting. Sampai jumpa!")
             break
         else:
