@@ -19,7 +19,7 @@ from src.simaster import (
     add_kkn_logbook_entry_by_id,
     post_attendance_for_sub_entry
 )
-from src.exporter import generate_schedule_html, export_to_html_file, export_to_pdf
+from src.exporter import generate_schedule_html, export_to_html_file, export_to_pdf, export_to_ics
 
 load_dotenv()
 
@@ -488,24 +488,22 @@ def visualize_schedule_plot(events: List[Dict], program_colors: Dict[str, str]):
 
 def handle_generate_timeline(session):
     """
-    Orchestrates fetching all program data, displays it in the console,
-    and then offers options to export the timeline to HTML and/or PDF.
+    Orchestrates fetching all program data, displays it, and offers export options.
     """
-    print("\n--- Generating Timeline ---")
+    print("\n--- Generating Timeline & Report ---")
     print("Fetching data from all programs, this may take a moment...")
     
+    # (Data fetching logic remains the same)
     all_events = []
     main_program_hours = defaultdict(float)
     bantu_hours = 0.0
     program_colors = {}
     color_index = 0
-    pic_hours = defaultdict(float) # New: To store hours per PIC
-
+    pic_hours = defaultdict(float)
     programs = get_kkn_programs(session)
     if not programs:
         print(f"{Fore.YELLOW}No programs found to generate a timeline.{Style.RESET_ALL}")
         return
-
     for prog in programs:
         prog['title'] = prog.get('program_mhs_judul', 'Unknown Program')
         prog['program_mhs_id'] = prog.get('program_mhs_id', 'Unknown ID')
@@ -513,7 +511,6 @@ def handle_generate_timeline(session):
         if prog_title not in program_colors:
             program_colors[prog_title] = MAIN_PROGRAM_COLORS[color_index % len(MAIN_PROGRAM_COLORS)]
             color_index += 1
-
     for prog in programs:
         prog_title = prog['title']
         print(f"  - Menganalisis program utama: {prog_title[:40]}...")
@@ -525,14 +522,7 @@ def handle_generate_timeline(session):
                     if start_time and end_time:
                         duration = (end_time - start_time).total_seconds() / 3600.0
                         main_program_hours[prog_title] += duration
-                        all_events.append({
-                            'title': sub_entry['title'],
-                            'start_time': start_time,
-                            'end_time': end_time,
-                            'type': prog_title,
-                            'color': program_colors[prog_title]
-                        })
-
+                        all_events.append({'title': sub_entry['title'], 'start_time': start_time, 'end_time': end_time, 'type': prog_title, 'color': program_colors[prog_title]})
     print("  - Menganalisis program bantu...")
     bantu_entries = get_bantu_pic_entries(session, programs[0])
     if bantu_entries:
@@ -543,23 +533,15 @@ def handle_generate_timeline(session):
                 if start_time and end_time:
                     duration = (end_time - start_time).total_seconds() / 3600.0
                     bantu_hours += duration
-                    pic_hours[pic_name] += duration # New: Accumulate hours for each PIC
-                    all_events.append({
-                        'title': sub_entry['title'],
-                        'start_time': start_time,
-                        'end_time': end_time,
-                        'type': 'Program Bantu',
-                        'color': Fore.MAGENTA
-                    })
-    
+                    pic_hours[pic_name] += duration
+                    all_events.append({'title': sub_entry['title'], 'start_time': start_time, 'end_time': end_time, 'type': 'Program Bantu', 'color': Fore.MAGENTA})
     if not all_events:
         print(f"{Fore.YELLOW}No activities found to generate a timeline.{Style.RESET_ALL}")
         return
 
-    # --- 1. Display timeline and summary in the console ---
+    # (Console display logic remains the same)
     visualize_schedule_plot(all_events, program_colors)
     total_hours = sum(main_program_hours.values()) + bantu_hours
-
     print("\n" + "="*85)
     print(" " * 30 + "RINGKASAN DURASI KEGIATAN")
     print("="*85 + "\n")
@@ -572,36 +554,41 @@ def handle_generate_timeline(session):
     print(f"  {'Total Keseluruhan:':<57} {total_hours: >6.1f} jam")
     print("="*85)
 
-    # --- 2. Ask the user for their preferred export format ---
+    # --- UPDATED: Ask the user for their preferred export format ---
     while True:
-        choice = input("\nChoose an export option:\n[1] Export to HTML\n[2] Export to PDF\n[3] Export to Both\n[4] Skip export\nEnter your choice (1-4): ").strip()
-        if choice in ['1', '2', '3', '4']:
+        print("\nChoose an export option:")
+        print("[1] Export to HTML Report")
+        print("[2] Export to PDF Report")
+        print(f"{Fore.CYAN}[3] Export to ICS (Calendar File){Style.RESET_ALL}")
+        print("[4] Export All (HTML, PDF, ICS)")
+        print("[5] Skip export")
+        choice = input("\nEnter your choice (1-5): ").strip()
+        if choice in ['1', '2', '3', '4', '5']:
             break
         else:
-            print(f"{Fore.RED}Invalid choice. Please enter a number between 1 and 4.{Style.RESET_ALL}")
+            print(f"{Fore.RED}Invalid choice. Please enter a number between 1 and 5.{Style.RESET_ALL}")
 
-    if choice == '4':
+    if choice == '5':
         print("\nSkipping export. Returning to main menu.")
         return
 
-    # --- 3. Generate HTML content and call the chosen exporter(s) ---
     print(f"\n{Fore.CYAN}Generating content for export...{Style.RESET_ALL}")
-    html_content = generate_schedule_html(
-        events=all_events,
-        program_colors=program_colors,
-        duration_summary=main_program_hours,
-        total_hours=total_hours,
-        pic_hours=pic_hours, # New: Pass PIC data
-        bantu_hours=bantu_hours
-    )
-    
-    if choice == '1': # HTML only
-        export_to_html_file(html_content)
-    elif choice == '2': # PDF only
-        export_to_pdf(html_content)
-    elif choice == '3': # Both
-        export_to_html_file(html_content)
-        export_to_pdf(html_content)
+
+    # Generate HTML/PDF if needed
+    if choice in ['1', '2', '4']:
+        html_content = generate_schedule_html(
+            events=all_events, program_colors=program_colors,
+            duration_summary=main_program_hours, total_hours=total_hours,
+            pic_hours=pic_hours, bantu_hours=bantu_hours
+        )
+        if choice in ['1', '4']:
+            export_to_html_file(html_content)
+        if choice in ['2', '4']:
+            export_to_pdf(html_content)
+
+    # Generate ICS if needed
+    if choice in ['3', '4']:
+        export_to_ics(all_events)
 
 def handle_check_all_attendance(session):
     """

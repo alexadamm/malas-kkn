@@ -1,3 +1,6 @@
 .env
 src/__pycache__/
 venv/
+timeline.pdf
+timeline_report.pdf
+kkn_schedule.ics

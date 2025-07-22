@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, time
 from collections import defaultdict
 from colorama import Fore, Style
 from collections import defaultdict
+from ics import Calendar, Event
+import pytz
 
 try:
     from weasyprint import HTML
@@ -237,3 +239,26 @@ def export_to_pdf(html_content: str, filename: str = "timeline_report.pdf"):
         print(f"{Fore.GREEN}✅ Laporan berhasil diekspor ke {filename}{Style.RESET_ALL}")
     except Exception as e:
         print(f"\n{Fore.RED}Terjadi kesalahan saat membuat PDF: {e}{Style.RESET_ALL}")
+
+def export_to_ics(events: List[Dict], filename: str = "kkn_schedule.ics"):
+    """Exports the schedule to an .ics calendar file."""
+    # Use the appropriate timezone for Indonesia (WIB)
+    local_tz = pytz.timezone('Asia/Jakarta')
+    c = Calendar()
+
+    for event_data in events:
+        e = Event()
+        e.name = event_data['title']
+        # The datetimes from the app are naive, so we make them timezone-aware
+        e.begin = local_tz.localize(event_data['start_time'])
+        e.end = local_tz.localize(event_data['end_time'])
+        e.description = f"Program: {event_data['type']}"
+        c.events.add(e)
+    
+    try:
+        with open(filename, 'w', encoding="utf-8") as f:
+            f.writelines(c.serialize_iter())
+        print(f"\n{Fore.GREEN}✅ Jadwal berhasil diekspor ke {filename}{Style.RESET_ALL}")
+        print("   Anda dapat mengimpor file ini ke Google Calendar, Outlook, atau Apple Calendar.")
+    except IOError as e:
+        print(f"\n{Fore.RED}Error: Gagal menyimpan file ICS. {e}{Style.RESET_ALL}")
