@@ -138,7 +138,6 @@ def get_kkn_programs(ses: requests.Session) -> Optional[List[Dict]]:
     """
     try:
         
-        print("\nAccessing KKN main page to find logbook URL...")
         kkn_main_url = f"{BASE_URL}/kkn/kkn/"
         main_page_req = ses.get(kkn_main_url)
         main_page_req.raise_for_status()
@@ -154,20 +153,21 @@ def get_kkn_programs(ses: requests.Session) -> Optional[List[Dict]]:
         logbook_page_url = logbook_page_url_match.group(1)
         if not logbook_page_url.startswith("http"):
             logbook_page_url = f"{BASE_URL}{logbook_page_url.lstrip('/')}"
-        print(f"Found logbook page URL: {logbook_page_url}")
-
-        print(f"Accessing logbook page to set session cookie and get data URL...")
+        
         page_req = ses.get(logbook_page_url)
         page_req.raise_for_status()
 
-        # get CSRF token from the session's cookie.
-        token = ses.cookies.get('simasterUGM_cookie')
+        # --- FIX for multiple cookies ---
+        # Instead of using .get(), iterate to find the last (most specific) cookie value
+        token = None
+        for cookie in ses.cookies:
+            if cookie.name == 'simasterUGM_cookie':
+                token = cookie.value
+        
         if not token:
             print("Could not find 'simasterUGM_cookie' in the session after visiting the logbook page.")
             return None
-        print(f"Found CSRF token in session cookie: {token}")
 
-        # parse data URL.
         data_url_match = re.search(
             r"'url'\s*:\s*[\"'](https://simaster\.ugm\.ac\.id/kkn/kkn/logbook_program_data/[^\"']+)",
             page_req.text,
@@ -176,9 +176,7 @@ def get_kkn_programs(ses: requests.Session) -> Optional[List[Dict]]:
             print("Could not find data URL in logbook page's JavaScript.")
             return None
         data_url = data_url_match.group(1)
-        print(f"Found data URL: {data_url}")
 
-        #POST request to get proker's table.
         post_data = {
             "draw": "1", "start": "0", "length": "25",
             "search[value]": "", "search[regex]": "false", "dt": "{}",
@@ -193,20 +191,16 @@ def get_kkn_programs(ses: requests.Session) -> Optional[List[Dict]]:
         }
         headers = {"X-Requested-With": "XMLHttpRequest"}
 
-        print("Fetching program data with full DataTables payload...")
         data_req = ses.post(data_url, data=post_data, headers=headers)
         data_req.raise_for_status()
 
         programs_data = data_req.json()
         
-        
         new_token = programs_data.get('csrf_value')
         if new_token:
             ses.cookies.set('simasterUGM_cookie', new_token)
-            print(f"Updated session with new CSRF token: {new_token}")
 
         programs = programs_data.get("data", [])
-        print(f"Found {len(programs)} programs.")
         return programs
 
     except requests.exceptions.RequestException as e:
@@ -214,9 +208,9 @@ def get_kkn_programs(ses: requests.Session) -> Optional[List[Dict]]:
         return None
     except json.JSONDecodeError:
         print("Failed to decode JSON from the server response.")
-        print("Response Text:", data_req.text)
         return None
     except Exception as e:
+        # This will now catch other errors, but the specific cookie error should be gone.
         print(f"An unexpected error occurred in get_kkn_programs: {e}")
         return None
 
@@ -227,7 +221,6 @@ def add_kkn_logbook_entry(
     """
     Adds a new logbook entry.
     """
-    print(f"\nAdding logbook entry for program: {program.get('program_nama', 'Unknown')}")
     try:
         action_html = program.get("action", "")
         rpp_url_match = re.search(r"href='([^']+logbook_program_rpp[^']+)'", action_html)
@@ -235,7 +228,6 @@ def add_kkn_logbook_entry(
             print("Could not find RPP URL in program action.")
             return False
         rpp_url = rpp_url_match.group(1)
-        print(f"Found RPP URL: {rpp_url}")
 
         rpp_page_req = ses.get(rpp_url)
         rpp_page_req.raise_for_status()
@@ -244,7 +236,6 @@ def add_kkn_logbook_entry(
             print("Could not find 'Tambah' link on the RPP page.")
             return False
         add_page_url = add_link_match.group(1)
-        print(f"Found 'Tambah' (Add) link: {add_page_url}")
 
         add_page_req = ses.get(add_page_url)
         add_page_req.raise_for_status()
@@ -258,13 +249,10 @@ def add_kkn_logbook_entry(
         hidden_inputs = form.xpath('.//input[@type="hidden"]')
         form_data = {inp.get("name"): inp.get("value") for inp in hidden_inputs}
         
-        print(f"Found add-entry form token: {form_data.get('simasterUGM_token')}")
-        
         form_data["dParam[judul]"] = entry_title
         form_data["dParam[pelaksanaan]"] = entry_date
         form_data["dParam[lokasi]"] = f"{latitude}, {longitude}"
 
-        print("Submitting new logbook entry...")
         response = ses.post(action_url, data=form_data)
         response.raise_for_status()
 
@@ -301,16 +289,13 @@ def add_kkn_logbook_entry_by_id(
 
     if not target_program:
         print(f"Program with ID '{program_mhs_id}' not found.")
-        print("Available programs:")
-        for p in programs:
-            print(f"  - ID: {p.get('program_mhs_id', 'No ID')}, Title: {p.get('program_mhs_judul', 'No name')}")
         return False
 
     return add_kkn_logbook_entry(ses, target_program, entry_title, entry_date, latitude, longitude)
 
 def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Optional[List[Dict]]:
     """
-    Fetches the logbook entries (RPP) for a specific KKN program.
+    Fetches the logbook entries (RPP) for a specific KKN program, including detailed sub-entries.
     """
     try:
         programs = get_kkn_programs(ses)
@@ -318,11 +303,7 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
             print("Could not fetch programs list to find the target program.")
             return None
 
-        target_program = None
-        for program in programs:
-            if program.get("program_mhs_id") == program_mhs_id:
-                target_program = program
-                break
+        target_program = next((p for p in programs if p.get("program_mhs_id") == program_mhs_id), None)
         
         if not target_program:
             print(f"Program with ID '{program_mhs_id}' not found in the program list.")
@@ -334,9 +315,7 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
             print("Could not find RPP URL in program's action HTML.")
             return None
         rpp_url = rpp_url_match.group(1)
-        print(f"\nFound RPP URL for program {program_mhs_id}: {rpp_url}")
 
-        print("Accessing RPP page to parse HTML...")
         rpp_page_req = ses.get(rpp_url)
         rpp_page_req.raise_for_status()
         
@@ -349,49 +328,71 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
             main_row = rows[i]
             cols = main_row.findall('td')
 
-            # If it's not a main entry row, skip 
-            if len(cols) != 5:
-                i += 1
-                continue
-            
-            # If it IS a main entry row, parse
-            action_html_str = tostring(cols[4], pretty_print=True).decode('utf-8')
-            kegiatan_match = re.search(r"href=['\"]([^'\"]*logbook_kegiatan[^'\"]*)['\"]", action_html_str)
+            # This is a main entry row
+            if len(cols) == 5:
+                action_html_str = tostring(cols[4], pretty_print=True).decode('utf-8')
+                kegiatan_match = re.search(r"href=['\"]([^'\"]*logbook_kegiatan[^'\"]*)['\"]", action_html_str)
 
-            entry_data = {
-                "entry_index": int(cols[0].text_content().strip()),
-                "kegiatan_url": kegiatan_match.group(1) if kegiatan_match else None,
-                "title": cols[1].text_content().strip(),
-                "date": cols[2].text_content().strip(),
-                "location": cols[3].text_content().strip(),
-                "attendance_status": "Sudah Presensi", 
-            }
+                entry_data = {
+                    "entry_index": int(cols[0].text_content().strip()),
+                    "kegiatan_url": kegiatan_match.group(1) if kegiatan_match else None,
+                    "title": cols[1].text_content().strip(),
+                    "date": cols[2].text_content().strip(),
+                    "location": cols[3].text_content().strip(),
+                    "sub_entries": []
+                }
 
-            # look ahead for all consecutive sub-entry rows
-            sub_entry_found = False
-            j = i + 1
-            while j < len(rows):
-                sub_row = rows[j]
-                sub_cols = sub_row.findall('td')
-                # A sub-row has 2 columns, the first of which is empty
-                if len(sub_cols) == 2 and not sub_cols[0].text_content():
-                    sub_entry_found = True
-                    # If we find even one sub-entry that is not attended, the whole entry is marked as such.
-                    if "Belum Presensi" in sub_row.text_content():
-                        entry_data["attendance_status"] = "Belum Presensi"
-                    j += 1 # Move to the next potential sub-row
+                # Look ahead for all consecutive sub-entry rows
+                all_sub_attended = False
+                notattendedflag = True
+                sub_entry_found = False
+                j = i + 1
+                while j < len(rows):
+                    sub_row = rows[j]
+                    sub_cols = sub_row.findall('td')
+                    if len(sub_cols) == 2 and not sub_cols[0].text_content().strip():
+                        full_text = ' '.join(sub_cols[1].text_content().split())
+                        is_attended = "Sudah Presensi" in full_text
+                        if is_attended and notattendedflag:
+                            all_sub_attended = True
+                        elif not is_attended:
+                            notattendedflag = False
+                            all_sub_attended = False
+                        # More powerful regex to capture title, datetime, and duration
+                        sub_entry_pattern = re.compile(
+                            r'^(?P<title>.*?)\s+'
+                            r'\((?P<datetime_str>.*? \d{2}:\d{2}.*?)\)\s+'
+                            r'\[(?P<duration>.*?)\]'
+                        )
+                        match = sub_entry_pattern.search(full_text)
+                        
+                        sub_data = { "is_attended": is_attended }
+                        if match:
+                            sub_data['title'] = match.group('title').strip()
+                            sub_data['datetime_str'] = match.group('datetime_str').strip()
+                            sub_data['duration'] = match.group('duration').strip()
+                        else:
+                            # Fallback for unexpected formats
+                            sub_data['title'] = full_text
+                            sub_data['datetime_str'] = "N/A"
+                            sub_data['duration'] = "N/A"
+                        sub_entry_found = True
+                        entry_data["sub_entries"].append(sub_data)
+                        j += 1
+                    else:
+                        break# Not a sub-row, break the inner loop
+                
+                # Determine overall status
+                if not sub_entry_found:
+                    entry_data["attendance_status"] = "Belum Presensi"
                 else:
-                    break
-            
-            # If no sub-entries were found at all, mark status as unknown or pending
-            if not sub_entry_found:
-                entry_data["attendance_status"] = "Belum Presensi"
+                    entry_data["attendance_status"] = "Sudah Presensi" if all_sub_attended else "Belum Presensi"
 
-            entries.append(entry_data)
-            
-            # Move the main index 'i' past all the rows we just processed
-            i = j
-        print(f"Found and parsed {len(entries)} entries from the HTML.")
+                entries.append(entry_data)
+                i = j # Move the main index past all the rows we just processed
+            else:
+                i += 1 # Not a main row, just move to the next one
+        
         return entries
 
     except requests.exceptions.RequestException as e:
@@ -401,32 +402,109 @@ def get_logbook_entries_by_id(ses: requests.Session, program_mhs_id: str) -> Opt
         print(f"An unexpected error occurred in get_logbook_entries_by_id: {e}")
         return None
 
-'''
-BUG: You cannot add a sub entry if the program already have 2 sub entries for some reason, this should not matter since ideally you would just create a new entry
-'''
-def create_sub_entry(ses: requests.Session, main_entry: Dict, sub_entry_title: str, description_text: str, duration: int) -> bool:
+
+def get_bantu_pic_entries(ses: requests.Session, entry_point_program: Dict) -> Optional[List[Dict]]:
     """
-    Creates a new sub-entry (kegiatan) under a main logbook entry.
+    Navigates to the RPP page for a given program to find and scrape the 'Program Bantu' table,
+    correctly parsing main entries and their nested sub-entries based on the observed HTML structure.
     """
     try:
-        kegiatan_url = main_entry.get("kegiatan_url")
-        if not kegiatan_url:
-            print("Selected main entry is missing the 'kegiatan_url'. Cannot proceed.")
-            return False
+        # 1. Get the RPP page URL from the user's own program entry
+        action_html = entry_point_program.get("action", "")
+        rpp_url_match = re.search(r"href='([^']+logbook_program_rpp[^']+)'", action_html)
+        if not rpp_url_match:
+            print("Could not find RPP URL in the selected program's action HTML.")
+            return None
+        rpp_url = rpp_url_match.group(1)
 
-        print(f"\nAccessing 'Kegiatan' page for entry '{main_entry.get('title')}': {kegiatan_url}")
+        # 2. Navigate to the RPP page
+        rpp_page_req = ses.get(rpp_url)
+        rpp_page_req.raise_for_status()
+
+        tree = fromstring(rpp_page_req.content)
+        
+        # 3. Find the panel for "Program Bantu"
+        bantu_panel_heading = tree.xpath('//*[@id="subcontent-element"]/div[4]/div[2]/div[2]/table')
+        if not bantu_panel_heading:
+            print("Could not find the 'Program Bantu' panel.")
+            return []
+        bantu_panel = bantu_panel_heading[0].getparent().getparent()
+        rows = bantu_panel.xpath('.//table/tbody/tr')
+
+        pic_entries = []
+        
+        for i, row in enumerate(rows):
+            cols = row.findall('td')
+
+            # Case 1: Main Entry Row (has 6 columns with a number in the first cell)
+            if len(cols) == 6 and cols[0].text_content().strip().isdigit():
+                main_entry = {
+                    "index": int(cols[0].text_content().strip()),
+                    "title": cols[1].text_content().strip(),
+                    "pic": cols[3].text_content().strip(),
+                    "date": cols[4].text_content().strip(),
+                    "location": cols[5].text_content().strip(),
+                    "sub_entries": []
+                }
+                pic_entries.append(main_entry)
+
+            # --- FIX START ---
+            # Case 2: Sub-entry Row. Based on debug output, these have 2 columns.
+            # The first column is empty, and the second contains all sub-entry data.
+            elif len(cols) == 2 and not cols[0].text_content().strip() and pic_entries:
+                # All data is in the second column (index 1)
+                sub_entry_cell_text = cols[1].text_content().strip()
+                
+                # Regex to extract title and datetime from the text content.
+                # It looks for a pattern like "Title (Date and Time WIB) [Duration]"
+                sub_entry_pattern = re.compile(
+                    r'^(?P<title>.*?)\s\((?P<datetime_str>.*?WIB)\)'
+                )
+                match = sub_entry_pattern.search(sub_entry_cell_text)
+
+                if match:
+                    sub_title = match.group('title').strip()
+                    datetime_str = match.group('datetime_str').strip()
+                    # The attendance status is also within the same cell's text
+                    is_attended = "Sudah Presensi" in sub_entry_cell_text
+                    
+                    sub_entry_data = {
+                        'title': sub_title,
+                        'datetime_str': datetime_str,
+                        'is_attended': is_attended
+                    }
+                    
+                    # Append the parsed sub-entry to the *last* main entry found
+                    pic_entries[-1]['sub_entries'].append(sub_entry_data)
+            # --- FIX END ---
+            
+        return pic_entries
+
+    except requests.exceptions.RequestException as e:
+        print(f"An HTTP error occurred: {e}")
+        return None
+    except (IndexError, AttributeError) as e:
+        print(f"Failed to parse the HTML structure for Program Bantu: {e}")
+        return None
+
+
+def create_sub_entry_base(
+    ses: requests.Session,
+    kegiatan_url: str,
+    form_details: Dict
+) -> bool:
+    """Base function to create a sub-entry, used by both main and PIC-assisted entries."""
+    try:
         kegiatan_page_req = ses.get(kegiatan_url)
         kegiatan_page_req.raise_for_status()
 
         add_form_url_match = re.search(r"<a href='([^']+)'.*?title='Tambah'>", kegiatan_page_req.text)
         if not add_form_url_match:
-            print("Could not find 'Tambah' link on the 'Kegiatan' page.")
+            print("Could not find 'Tambah' (Add) link on the 'Kegiatan' page.")
             return False
         
         add_form_url = add_form_url_match.group(1)
-        print(f"Found 'Tambah' form URL: {add_form_url}")
 
-        print("Accessing form page...")
         form_page_req = ses.get(add_form_url)
         form_page_req.raise_for_status()
 
@@ -440,23 +518,20 @@ def create_sub_entry(ses: requests.Session, main_entry: Dict, sub_entry_title: s
         hidden_inputs = form.xpath('.//input[@type="hidden"]')
         form_data = {inp.get("name"): inp.get("value") for inp in hidden_inputs}
 
-        print(f"Found form token: {form_data.get('simasterUGM_token')}")
-
-        form_data["dParam[judul]"] = sub_entry_title
-        form_data["dParam[pelaksanaan]"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        form_data["dParam[durasi]"] = str(duration)
-        form_data["dParam[deskripsi]"] = description_text
-        form_data["dParam[sasaran]"] = "-"
-        form_data["dParam[jumPeserta]"] = "0"
+        # Populate form with provided details
+        form_data["dParam[judul]"] = form_details.get("sub_entry_title")
+        form_data["dParam[pelaksanaan]"] = form_details.get("pelaksanaan_datetime")
+        form_data["dParam[durasi]"] = str(form_details.get("duration"))
+        form_data["dParam[deskripsi]"] = form_details.get("description_text")
+        form_data["dParam[sasaran]"] = form_details.get("sasaran")
+        form_data["dParam[jumPeserta]"] = form_details.get("jumPeserta")
         form_data["dParam[sumberDana]"] = "1"
         form_data["dParam[sumberDanaLain]"] = ""
-        form_data["dParam[jumDana]"] = "0"
-        form_data["dParam[hasilKegiatan]"] = "Kegiatan terlaksana dengan baik."
+        form_data["dParam[jumDana]"] = form_details.get("jumDana")
+        form_data["dParam[hasilKegiatan]"] = form_details.get("hasil_kegiatan_text")
 
-        print("Submitting form to create sub-entry...")
         response = ses.post(action_url, data=form_data)
         response.raise_for_status()
-        
         
         try:
             response_json = response.json()
@@ -467,7 +542,6 @@ def create_sub_entry(ses: requests.Session, main_entry: Dict, sub_entry_title: s
                 print(f"Failed to create sub-entry. Server response: {response_json}")
                 return False
         except json.JSONDecodeError:
-             
             if response.status_code == 200:
                 print("Successfully created new sub-entry (judging by status code).")
                 return True
@@ -478,12 +552,29 @@ def create_sub_entry(ses: requests.Session, main_entry: Dict, sub_entry_title: s
         print(f"An error occurred while creating sub-entry: {e}")
         return False
     except Exception as e:
-        print(f"An unexpected error occurred in create_sub_entry: {e}")
+        print(f"An unexpected error occurred in create_sub_entry_base: {e}")
         return False
 
-"""
-it works now
-"""
+def create_sub_entry(
+    ses: requests.Session, main_entry: Dict, form_details: Dict
+) -> bool:
+    """Creates a new sub-entry (kegiatan) under a main logbook entry."""
+    kegiatan_url = main_entry.get("kegiatan_url")
+    if not kegiatan_url:
+        print("Selected main entry is missing the 'kegiatan_url'. Cannot proceed.")
+        return False
+    return create_sub_entry_base(ses, kegiatan_url, form_details)
+
+def create_bantu_pic_sub_entry(
+    ses: requests.Session, pic_entry: Dict, form_details: Dict
+) -> bool:
+    """Creates a new sub-entry (kegiatan) under a PIC-assisted logbook entry."""
+    kegiatan_url = pic_entry.get("kegiatan_url")
+    if not kegiatan_url:
+        print("Selected PIC entry is missing the 'kegiatan_url'. Cannot proceed.")
+        return False
+    return create_sub_entry_base(ses, kegiatan_url, form_details)
+
 
 def post_attendance_for_sub_entry(ses: requests.Session, program_mhs_id: str, main_entry_index: int, sub_entry_title_to_find: str, latitude: float, longitude: float) -> bool:
     """
@@ -503,18 +594,21 @@ def post_attendance_for_sub_entry(ses: requests.Session, program_mhs_id: str, ma
         if not rpp_url_match: return False
         rpp_url = rpp_url_match.group(1)
         
-        print(f"\nAccessing RPP page for program {program_mhs_id}...")
         rpp_page_req = ses.get(rpp_url)
         rpp_page_req.raise_for_status()
 
-        page_token = rpp_page_req.cookies.get('simasterUGM_cookie')
+        page_token = None
+        for cookie in rpp_page_req.cookies:
+            if cookie.name == 'simasterUGM_cookie':
+                page_token = cookie.value
+
         if not page_token:
-            print("ERROR: Could not find 'simasterUGM_cookie' in the RPP page response. Trying session cookie as fallback.")
-            page_token = ses.cookies.get('simasterUGM_cookie')
+            for cookie in ses.cookies:
+                if cookie.name == 'simasterUGM_cookie':
+                    page_token = cookie.value
             if not page_token:
                  print("Fallback failed. Cannot find a valid token.")
                  return False
-        print(f"Successfully captured page token: {page_token}")
 
         tree = fromstring(rpp_page_req.content)
         rows = tree.xpath('//table[@id="datatables2"]/tbody/tr')
@@ -524,36 +618,27 @@ def post_attendance_for_sub_entry(ses: requests.Session, program_mhs_id: str, ma
             main_row = rows[i]
             cols = main_row.findall('td')
 
-            if len(cols) != 5:
+            if len(cols) != 5 or int(cols[0].text_content().strip()) != main_entry_index:
                 i += 1
                 continue
             
-            if int(cols[0].text_content().strip()) != main_entry_index:
-                i += 1
-                continue
-            
-            print(f"Found main entry #{main_entry_index}. Searching for sub-entry '{sub_entry_title_to_find}'...")
             j = i + 1
             while j < len(rows):
                 sub_row = rows[j]
                 if len(sub_row.findall('td')) != 2: break
 
                 if sub_entry_title_to_find in sub_row.text_content():
-                    print("Found target sub-entry row.")
-                    
                     presensi_buttons = sub_row.xpath(".//a[contains(., 'Presensi')]")
                     if not presensi_buttons:
-                        print("No 'Presensi' button available.")
+                        print("No 'Presensi' button available for this sub-entry (already attended?).")
                         return False
-                    presensi_button = presensi_buttons[0]
-
-                    ajaxify_url = presensi_button.get('ajaxify')
+                    
+                    ajaxify_url = presensi_buttons[0].get('ajaxify')
                     if not ajaxify_url:
                         print("ERROR: 'Presensi' button has no 'ajaxify' URL.")
                         return False
                     
                     url_parts = [part for part in ajaxify_url.split('/') if part]
-                    
                     
                     payload = {
                         "timelineId": url_parts[-5],
@@ -568,7 +653,6 @@ def post_attendance_for_sub_entry(ses: requests.Session, program_mhs_id: str, ma
                     }
                     
                     action_url = f"{BASE_URL}/kkn/kkn/logbook_kegiatan_presensi"
-                    print("Submitting attendance request...")
                     response = ses.post(action_url, data=payload)
                     response.raise_for_status()
                     
@@ -590,4 +674,3 @@ def post_attendance_for_sub_entry(ses: requests.Session, program_mhs_id: str, ma
     except Exception as e:
         print(f"An unexpected error occurred in post_attendance_for_sub_entry: {e}")
         return False
-
