@@ -85,15 +85,19 @@ def post_kkn_presensi(
 
     try:
         # get csrf token
-        page_req = ses.get(presensi_url)
-        page_req.raise_for_status()
-
-        token_match = re.search(r'name="simasterUGM_token" value="(.+?)"', page_req.text)
-        if not token_match:
-            print("Could not find simasterUGM_token on the KKN page.")
-            return False
-        token = token_match.group(1)
-        print(f"Found KKN page simasterUGM_token: {token}")
+        # token is ses dict value of property simasterUGM_cookie
+        token = ses.cookies.get('simasterUGM_cookie')
+        if token is None:
+            print("token not found in cache, fetching from KKN page...")
+            page_req = ses.get(presensi_url)
+            page_req.raise_for_status()
+        
+            token_match = re.search(r'name="simasterUGM_token" value="(.+?)"', page_req.text)
+            if not token_match:
+                print("Could not find simasterUGM_token on the KKN page.")
+                return False
+            token = token_match.group(1)
+            print(f"Found KKN page simasterUGM_token: {token}")
 
         presensi_data = {
             "simasterUGM_token": token,
