@@ -29,7 +29,7 @@ def main():
         return
 
     def submit_kkn_attendance():
-        session = get_simaster_session(username, password)
+        session = get_simaster_session(username, password, False)
         if not session:
             print("Login failed. Exiting server.")
             return

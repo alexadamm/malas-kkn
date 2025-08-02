@@ -47,8 +47,8 @@ def generate_random_point(lat, lon, radius_m):
 # the time window in which attendance should be posted (24-hour format).
 # the script will pick a random time between these hours.
 
-RUN_WINDOW_START_HOUR = 5  # 5 AM
-RUN_WINDOW_END_HOUR = 23 # 11 PM
+RUN_WINDOW_START_HOUR = 4  # 5 AM
+RUN_WINDOW_END_HOUR = 10 # 10 AM
 
 def get_next_run_time() -> datetime:
     """
